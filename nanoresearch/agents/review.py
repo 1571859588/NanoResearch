@@ -1081,10 +1081,19 @@ IMPORTANT: If the section contains \\begin{{figure}}...\\end{{figure}} or \\begi
 
         tex_lines = tex_source.split('\n')
         if error_line and len(tex_source) > 30000:
+            # Convert to 0-indexed
+            err_idx = max(0, error_line - 1)
             # Send preamble (first 50 lines) + window around error + last 30 lines
             preamble_end = min(50, len(tex_lines))
-            window_start = max(preamble_end, error_line - 30)
-            window_end = min(len(tex_lines), error_line + 30)
+            window_start = max(0, err_idx - 30)
+            window_end = min(len(tex_lines), err_idx + 30)
+            # Ensure window_start <= window_end
+            if window_start < preamble_end and window_end > preamble_end:
+                window_start = preamble_end  # avoid overlapping preamble
+            elif window_end <= preamble_end:
+                # Error is in the preamble — just extend preamble to cover it
+                preamble_end = window_end
+                window_start = window_end  # no separate window needed
             tail_start = max(window_end, len(tex_lines) - 30)
 
             focused_lines = tex_lines[:preamble_end]
@@ -1183,11 +1192,11 @@ IMPORTANT: If the section contains \\begin{{figure}}...\\end{{figure}} or \\begi
                 # Preserve figure/table environments from old content
                 # that may have been dropped by the revision LLM
                 old_figures = re.findall(
-                    r'(\\begin\{figure\}.*?\\end\{figure\})',
+                    r'(\\begin\{figure\*?\}.*?\\end\{figure\*?\})',
                     old_content, re.DOTALL,
                 )
                 old_tables = re.findall(
-                    r'(\\begin\{table\}.*?\\end\{table\})',
+                    r'(\\begin\{table\*?\}.*?\\end\{table\*?\})',
                     old_content, re.DOTALL,
                 )
                 preserved = []
@@ -1206,6 +1215,8 @@ IMPORTANT: If the section contains \\begin{{figure}}...\\end{{figure}} or \\begi
                         label = label_match.group(1)
                         if label not in new_content:
                             preserved.append(tbl_block)
+                    elif 'caption' in tbl_block and '\\begin{tabular}' not in new_content:
+                        preserved.append(tbl_block)
 
                 suffix = ""
                 if preserved:

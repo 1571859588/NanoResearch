@@ -102,6 +102,13 @@ class IdeationAgent(BaseResearchAgent):
             papers = cached["papers"]
             logger.info("[%s] Using cached: %d queries, %d papers",
                         self.stage.value, len(queries), len(papers))
+            # Restore must_cites from cache, or re-extract if not cached
+            must_cites = cached.get("must_cites", [])
+            if not must_cites:
+                must_cites = await self._extract_must_cites(
+                    [p for p in papers if "survey" in (p.get("title", "") or "").lower()
+                     or "review" in (p.get("title", "") or "").lower()]
+                )
         else:
             # Step 1: Generate search queries
             queries = await self._generate_queries(topic)
@@ -139,11 +146,12 @@ class IdeationAgent(BaseResearchAgent):
             else:
                 must_cites = []
 
-            # Cache search results for retry
+            # Cache search results for retry (including must_cites)
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(
-                    json.dumps({"queries": queries, "papers": papers},
+                    json.dumps({"queries": queries, "papers": papers,
+                                "must_cites": must_cites},
                                ensure_ascii=False, default=str),
                     encoding="utf-8",
                 )
@@ -154,9 +162,8 @@ class IdeationAgent(BaseResearchAgent):
         # Step 3: LLM analysis — gaps + hypotheses (with ReAct tool use)
         output = await self._analyze_and_hypothesize(topic, queries, papers)
 
-        # Store must-cite titles (computed during search phase)
-        if cached is None:
-            output.must_cites = must_cites
+        # Store must-cite titles
+        output.must_cites = must_cites
 
         # Step 4: Extract quantitative evidence from paper abstracts
         evidence = await self._extract_evidence(papers)

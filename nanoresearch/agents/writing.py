@@ -943,7 +943,7 @@ Output ONLY the LaTeX paragraphs for this section. Do not include \\section comm
     # ---- missing citation resolver -------------------------------------------
 
     _CITE_KEY_RE = re.compile(r"\\cite[tp]?\{([^}]+)\}")
-    _BIB_KEY_RE = re.compile(r"@\w+\{([^,\s]+)")
+    _BIB_KEY_RE = re.compile(r"@\w+\s*\{\s*([^,\s]+)")
 
     async def _resolve_missing_citations(
         self, latex: str, bibtex: str
@@ -1260,9 +1260,18 @@ Output ONLY the LaTeX paragraphs for this section. Do not include \\section comm
 
         tex_lines = tex_source.split('\n')
         if error_line and len(tex_source) > 30000:
+            # Convert to 0-indexed
+            err_idx = max(0, error_line - 1)
             preamble_end = min(50, len(tex_lines))
-            window_start = max(preamble_end, error_line - 30)
-            window_end = min(len(tex_lines), error_line + 30)
+            window_start = max(0, err_idx - 30)
+            window_end = min(len(tex_lines), err_idx + 30)
+            # Ensure window_start <= window_end
+            if window_start < preamble_end and window_end > preamble_end:
+                window_start = preamble_end  # avoid overlapping preamble
+            elif window_end <= preamble_end:
+                # Error is in the preamble — just extend preamble to cover it
+                preamble_end = window_end
+                window_start = window_end  # no separate window needed
             tail_start = max(window_end, len(tex_lines) - 30)
 
             focused_lines = tex_lines[:preamble_end]
