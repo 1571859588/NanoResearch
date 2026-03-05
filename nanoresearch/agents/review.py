@@ -100,7 +100,9 @@ class ReviewAgent(BaseResearchAgent):
             low_sections = [
                 sr for sr in review.section_reviews if sr.score < MIN_SECTION_SCORE
             ]
-            if not low_sections and not consistency_issues:
+            # Include all consistency issues (regex + claim + figure) for loop control
+            all_consistency = review.consistency_issues
+            if not low_sections and not all_consistency:
                 break
 
             revision_round += 1
@@ -114,9 +116,10 @@ class ReviewAgent(BaseResearchAgent):
 
             for section_review in low_sections:
                 # Collect consistency issues relevant to this section
+                # Include issues without locations as potentially relevant to any section
                 section_consistency = [
-                    ci for ci in consistency_issues
-                    if any(
+                    ci for ci in all_consistency
+                    if not getattr(ci, 'locations', []) or any(
                         section_review.section.lower() in loc.lower()
                         for loc in getattr(ci, 'locations', [])
                     )
@@ -133,10 +136,16 @@ class ReviewAgent(BaseResearchAgent):
             if round_revised:
                 current_tex = self._apply_revisions(current_tex, round_revised)
 
-            # Re-run consistency checks after revision
-            consistency_issues = self._run_consistency_checks(current_tex)
-            if consistency_issues:
-                self.log(f"  {len(consistency_issues)} consistency issues remain after revision")
+            # Re-run all consistency checks after revision
+            review.consistency_issues = self._run_consistency_checks(current_tex)
+            review.consistency_issues.extend(
+                self._check_claim_result_consistency(current_tex, experiment_blueprint)
+            )
+            review.consistency_issues.extend(
+                self._check_figure_text_alignment(current_tex)
+            )
+            if review.consistency_issues:
+                self.log(f"  {len(review.consistency_issues)} consistency issues remain after revision")
 
             # Re-review revised sections with LLM
             re_review = await self._review_paper(current_tex, ideation_output, experiment_blueprint)
@@ -258,8 +267,9 @@ class ReviewAgent(BaseResearchAgent):
         Handles \\section{} (level=0), \\subsection{} (level=1),
         and \\subsubsection{} (level=2).
         """
+        # Use a pattern that handles nested braces (e.g. \section{Method for \textbf{X}})
         pattern = re.compile(
-            r"\\((?:sub){0,2})section\*?\{([^}]+)\}",
+            r"\\((?:sub){0,2})section\*?\{((?:[^{}]|\{[^{}]*\})+)\}",
         )
         matches = list(pattern.finditer(tex))
         if not matches:
@@ -840,6 +850,9 @@ IMPORTANT: If the section contains \\begin{{figure}}...\\end{{figure}} or \\begi
             # Create a temporary WritingAgent-like resolver
             new_entries: list[str] = []
             for key in sorted(missing):
+                # Skip if already present (guards against duplicate calls)
+                if re.search(r'@\w+\s*\{\s*' + re.escape(key) + r'\s*,', bib_content):
+                    continue
                 entry = await self._resolve_single_citation_key(key)
                 new_entries.append(entry)
 
@@ -1159,47 +1172,52 @@ IMPORTANT: If the section contains \\begin{{figure}}...\\end{{figure}} or \\begi
                 r"(?=\\(?:sub){0,2}section\*?\{|\\end\{document\}|\\bibliography)"
             )
             match = re.search(pattern, result[body_start:], re.DOTALL)
-            if match:
-                old_content = match.group(2)
-                abs_start = body_start + match.start(2)
-                abs_end = body_start + match.end(2)
+            if not match:
+                logger.warning(
+                    "Cannot find section '%s' in paper — revision discarded", heading
+                )
+                continue
 
-                # Preserve figure/table environments from old content
-                # that may have been dropped by the revision LLM
-                old_figures = re.findall(
-                    r'(\\begin\{figure\*?\}.*?\\end\{figure\*?\})',
-                    old_content, re.DOTALL,
-                )
-                old_tables = re.findall(
-                    r'(\\begin\{table\*?\}.*?\\end\{table\*?\})',
-                    old_content, re.DOTALL,
-                )
-                preserved = []
-                for fig_block in old_figures:
-                    # Only preserve if new content doesn't already have this figure
-                    label_match = re.search(r'\\label\{([^}]+)\}', fig_block)
-                    if label_match:
-                        label = label_match.group(1)
-                        if label not in new_content:
-                            preserved.append(fig_block)
-                    elif 'includegraphics' in fig_block and 'includegraphics' not in new_content:
+            old_content = match.group(2)
+            abs_start = body_start + match.start(2)
+            abs_end = body_start + match.end(2)
+
+            # Preserve figure/table environments from old content
+            # that may have been dropped by the revision LLM
+            old_figures = re.findall(
+                r'(\\begin\{figure\*?\}.*?\\end\{figure\*?\})',
+                old_content, re.DOTALL,
+            )
+            old_tables = re.findall(
+                r'(\\begin\{table\*?\}.*?\\end\{table\*?\})',
+                old_content, re.DOTALL,
+            )
+            preserved = []
+            for fig_block in old_figures:
+                # Only preserve if new content doesn't already have this figure
+                label_match = re.search(r'\\label\{([^}]+)\}', fig_block)
+                if label_match:
+                    label = label_match.group(1)
+                    if label not in new_content:
                         preserved.append(fig_block)
-                for tbl_block in old_tables:
-                    label_match = re.search(r'\\label\{([^}]+)\}', tbl_block)
-                    if label_match:
-                        label = label_match.group(1)
-                        if label not in new_content:
-                            preserved.append(tbl_block)
-                    elif 'caption' in tbl_block and '\\begin{tabular}' not in new_content:
+                elif 'includegraphics' in fig_block and 'includegraphics' not in new_content:
+                    preserved.append(fig_block)
+            for tbl_block in old_tables:
+                label_match = re.search(r'\\label\{([^}]+)\}', tbl_block)
+                if label_match:
+                    label = label_match.group(1)
+                    if label not in new_content:
                         preserved.append(tbl_block)
+                elif 'caption' in tbl_block and '\\begin{tabular}' not in new_content:
+                    preserved.append(tbl_block)
 
-                suffix = ""
-                if preserved:
-                    suffix = "\n\n" + "\n\n".join(preserved)
+            suffix = ""
+            if preserved:
+                suffix = "\n\n" + "\n\n".join(preserved)
 
-                result = (
-                    result[:abs_start]
-                    + "\n" + new_content + suffix + "\n\n"
-                    + result[abs_end:]
-                )
+            result = (
+                result[:abs_start]
+                + "\n" + new_content + suffix + "\n\n"
+                + result[abs_end:]
+            )
         return result

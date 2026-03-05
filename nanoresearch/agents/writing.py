@@ -904,9 +904,12 @@ Output ONLY the LaTeX paragraphs for this section. Do not include \\section comm
 
         self.log(f"Resolving {len(missing)} missing citation(s): {sorted(missing)}")
 
-        # 3. Try to resolve each missing key
+        # 3. Try to resolve each missing key (skip if already added by a prior call)
         new_entries: list[str] = []
         for key in sorted(missing):
+            # Double-check key isn't already in bibtex (guards against duplicate calls)
+            if re.search(r'@\w+\s*\{\s*' + re.escape(key) + r'\s*,', bibtex):
+                continue
             entry = await self._resolve_single_citation(key)
             new_entries.append(entry)
 

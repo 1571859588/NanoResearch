@@ -1497,6 +1497,9 @@ class FigureAgent(BaseResearchAgent):
         except subprocess.TimeoutExpired:
             self.log(f"  {fig_key} code execution timed out")
             return self._generate_fallback_chart(fig_key, filename_stem, caption)
+        except Exception as exc:
+            self.log(f"  {fig_key} code execution error: {exc}")
+            return self._generate_fallback_chart(fig_key, filename_stem, caption)
 
         if not png_path.exists():
             self.log(f"  {fig_key} code ran but PNG not generated at {output_path}")
