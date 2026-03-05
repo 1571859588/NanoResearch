@@ -416,20 +416,20 @@ class TestWritingRealResultsContext:
         assert "PROPOSED" in ctx
 
     def test_pending_results(self):
-        """Pending results context instructs to generate synthetic results."""
+        """Pending results context instructs NOT to fabricate results."""
         ctx = WritingAgent._build_real_results_context({}, "pending")
-        assert "NOT YET AVAILABLE" in ctx or "SYNTHETIC" in ctx or "synthetic" in ctx
-        # Should instruct to fill tables, not leave blank
-        assert "NEVER leave rows as '--'" in ctx or "synthetic" in ctx.lower()
+        assert "NOT AVAILABLE" in ctx
+        # Should instruct NOT to fabricate
+        assert "NOT fabricate" in ctx or "Do NOT" in ctx
 
     def test_failed_results(self):
         """Failed experiment results also show not-available context."""
         ctx = WritingAgent._build_real_results_context(SAMPLE_METRICS, "failed")
-        assert "NOT YET AVAILABLE" in ctx or "SYNTHETIC" in ctx
+        assert "NOT AVAILABLE" in ctx
 
     def test_empty_main_results(self):
         """Empty main_results with success status shows not-available context."""
         ctx = WritingAgent._build_real_results_context(
             {"main_results": []}, "success"
         )
-        assert "NOT YET AVAILABLE" in ctx or "SYNTHETIC" in ctx
+        assert "NOT AVAILABLE" in ctx

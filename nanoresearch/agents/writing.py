@@ -203,8 +203,10 @@ PAPER_SECTIONS = [
      "Do NOT round, adjust, or modify them.\n"
      "If results are marked SYNTHETIC or come from figure data, use those numbers in the tables.\n"
      "NEVER leave the proposed method rows as '--'. Always fill tables with concrete numbers.\n"
-     "If no results are available at all, generate plausible synthetic results that are\n"
-     "consistent with the figures and the paper's claims. The paper must read as complete.\n\n"
+     "If no results are available because the experiment FAILED or did not run,\n"
+     "you MUST clearly state this in the text. Write: 'Due to [reason], we were unable to\n"
+     "obtain experimental results. We present our methodology and leave empirical validation\n"
+     "for future work.' Do NOT fabricate or invent any experimental numbers.\n\n"
      "Do NOT include \\begin{figure} blocks yourself --- figures are inserted automatically "
      "near their \\ref{fig:...} references.",
      []),
@@ -592,7 +594,7 @@ Every component listed above should appear in the ablation table.
             main_results = []
         has_real = bool(
             experiment_results
-            and experiment_status == "success"
+            and experiment_status.lower() in ("success", "completed")
             and main_results
         )
 
@@ -643,11 +645,21 @@ Every component listed above should appear in the ablation table.
             return "\n".join(lines)
         else:
             return (
-                "=== EXPERIMENT RESULTS: NOT YET AVAILABLE ===\n"
-                "Real experiment results are not yet available.\n"
-                "Generate plausible synthetic results consistent with the paper's claims.\n"
-                "Fill ALL table rows with concrete numbers — NEVER leave rows as '--'.\n"
-                "The paper must read as a complete, polished draft.\n"
+                "=== EXPERIMENT RESULTS: NOT AVAILABLE ===\n"
+                "Real experiment results are NOT available. The experiment either failed,\n"
+                "did not run, or produced no metrics.\n\n"
+                "STRICT RULES:\n"
+                "- Do NOT fabricate, invent, or generate ANY experimental numbers.\n"
+                "- Do NOT create fake accuracy, AUC, F1, loss, or any other metrics.\n"
+                "- Do NOT fill tables with made-up numbers.\n"
+                "- In the Experiments section, describe the experimental SETUP (datasets,\n"
+                "  baselines, metrics, hyperparameters) but clearly state that results\n"
+                "  could not be obtained due to execution failure.\n"
+                "- Write: 'Due to technical issues during execution, we were unable to\n"
+                "  obtain experimental results in this draft. We present our methodology\n"
+                "  and experimental design; empirical validation is left for the final version.'\n"
+                "- Omit results tables entirely, or include them with placeholder '--' values\n"
+                "  and a note explaining that results are pending.\n"
                 "=== END EXPERIMENT RESULTS ==="
             )
 

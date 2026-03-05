@@ -95,8 +95,37 @@ class ExecutionAgent(BaseResearchAgent):
 
             # If job succeeded or we've exhausted debug rounds, stop
             if final_status == "COMPLETED":
-                self.log(f"Job completed successfully after {debug_round} debug round(s)")
-                break
+                # Verify training actually produced results (not just exit code 0)
+                has_metrics = bool(
+                    results.get("metrics")
+                    or results.get("parsed_metrics")
+                    or results.get("training_log")
+                    or results.get("training_log_csv")
+                    or results.get("checkpoints")
+                )
+                if has_metrics:
+                    self.log(f"Job completed successfully after {debug_round} debug round(s)")
+                    break
+                else:
+                    # Check stdout/stderr for crash indicators
+                    combined_log = results.get("stdout_log", "") + results.get("stderr_log", "")
+                    crash_indicators = [
+                        "RuntimeError", "Error(s) in loading", "Traceback",
+                        "CUDA out of memory", "OOM", "Killed",
+                        "Exception", "FileNotFoundError", "ModuleNotFoundError",
+                    ]
+                    has_crash = any(ind in combined_log for ind in crash_indicators)
+                    if has_crash:
+                        self.log(
+                            "Job exited with code 0 but logs contain errors and no metrics produced. "
+                            "Treating as FAILED."
+                        )
+                        final_status = "FAILED"
+                        final_result["final_status"] = "FAILED"
+                        # Fall through to debug loop
+                    else:
+                        self.log(f"Job completed after {debug_round} debug round(s) (no metrics found)")
+                        break
 
             if debug_round >= MAX_DEBUG_ROUNDS:
                 self.log(f"Max debug rounds ({MAX_DEBUG_ROUNDS}) reached, giving up")
