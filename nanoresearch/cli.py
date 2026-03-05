@@ -436,6 +436,50 @@ def delete(
 
 
 @app.command()
+def deep(
+    topic: str = typer.Option(..., "--topic", "-t", help="Research topic"),
+    format: str = typer.Option("neurips2025", "--format", "-f", help="Paper format"),
+    config_path: Path = typer.Option(None, "--config", "-c", help="Path to config file"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Run the DEEP research pipeline: search code, run real experiments on GPU, write paper with real results."""
+    _setup_logging(verbose)
+
+    from nanoresearch.pipeline.deep_orchestrator import DeepPipelineOrchestrator
+
+    config = _load_config_safe(config_path)
+    config.template_format = format
+
+    workspace = Workspace.create(topic=topic, config_snapshot=config.snapshot())
+    console.print(Panel(
+        f"[bold]Topic:[/bold] {topic}\n"
+        f"[bold]Mode:[/bold] DEEP (real experiments)\n"
+        f"[bold]Session:[/bold] {workspace.manifest.session_id}\n"
+        f"[bold]Workspace:[/bold] {workspace.path}\n"
+        f"[bold]Format:[/bold] {format}\n\n"
+        f"Pipeline: IDEATION → PLANNING → SETUP → CODING → EXECUTION → ANALYSIS → WRITING",
+        title="NanoResearch Deep Mode",
+        border_style="magenta",
+    ))
+
+    orchestrator = DeepPipelineOrchestrator(workspace, config)
+    try:
+        result = asyncio.run(_run_deep_pipeline(orchestrator, topic))
+        _print_result(result, workspace)
+    except Exception as e:
+        console.print(f"[red]Deep pipeline failed:[/red] {e}")
+        console.print(f"[bold]Workspace:[/bold] {workspace.path}")
+        raise typer.Exit(1)
+
+
+async def _run_deep_pipeline(orchestrator, topic: str) -> dict:
+    try:
+        return await orchestrator.run(topic)
+    finally:
+        await orchestrator.close()
+
+
+@app.command()
 def inspect(
     workspace: Path = typer.Option(..., "--workspace", "-w", help="Path to workspace directory"),
     stage: str = typer.Option(None, "--stage", "-s", help="Stage to inspect (e.g., ideation, planning)"),

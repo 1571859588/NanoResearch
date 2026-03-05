@@ -43,3 +43,6 @@ templates/
 # OS
 .DS_Store
 Thumbs.db
+
+# Pipeline workspaces (test runs)
+nanoresearch_*/

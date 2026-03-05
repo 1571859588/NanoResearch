@@ -1,0 +1,585 @@
+"""Coding agent — writes runnable experiment code based on cloned repos and blueprint."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re as _re
+from pathlib import Path
+from typing import Any
+
+from nanoresearch.agents.base import BaseResearchAgent
+from nanoresearch.schemas.manifest import PipelineStage
+
+logger = logging.getLogger(__name__)
+
+
+class CodingAgent(BaseResearchAgent):
+    """Generates runnable training code + SLURM scripts based on cloned repos and experiment plan."""
+
+    stage = PipelineStage.EXPERIMENT  # placeholder for base class
+
+    @property
+    def stage_config(self):
+        """Use code_gen model config for writing code."""
+        return self.config.for_stage("code_gen")
+
+    async def run(self, **inputs: Any) -> dict[str, Any]:
+        topic: str = inputs["topic"]
+        experiment_blueprint: dict = inputs.get("experiment_blueprint", {})
+        setup_output: dict = inputs.get("setup_output", {})
+
+        self.log("Starting coding: generating runnable experiment")
+
+        code_dir = self.workspace.path / "experiment"
+        code_dir.mkdir(exist_ok=True)
+
+        # Step 1: Design the experiment code plan
+        code_plan = await self._design_code_plan(
+            topic, experiment_blueprint, setup_output
+        )
+        self.log(f"Code plan: {len(code_plan.get('files', []))} files")
+
+        # Step 2: Generate each file
+        generated_files = []
+        for file_spec in code_plan.get("files", []):
+            filepath = file_spec.get("path", "")
+            if not filepath:
+                continue
+            content = await self._generate_file(
+                file_spec, code_plan, experiment_blueprint, setup_output
+            )
+            # Write file
+            full_path = code_dir / filepath
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content)
+            generated_files.append(str(filepath))
+            self.log(f"Generated: {filepath}")
+
+        # Step 2b: Cross-file import consistency check
+        await self._fix_import_mismatches(code_dir, code_plan)
+
+        # Step 2c: Validate generated code only references existing data paths
+        path_issues = self._validate_data_paths(
+            code_dir,
+            setup_output.get("downloaded_resources", []),
+            setup_output.get("data_dir", ""),
+            setup_output.get("models_dir", ""),
+        )
+        if path_issues:
+            self.log(f"Found {len(path_issues)} invalid path references, re-generating affected files")
+            affected_files: dict[str, list[str]] = {}
+            for issue in path_issues:
+                affected_files.setdefault(issue["file"], []).append(issue["path"])
+
+            for filename, bad_paths in affected_files.items():
+                file_spec = next(
+                    (f for f in code_plan.get("files", []) if f.get("path") == filename),
+                    {"path": filename, "description": ""},
+                )
+                file_spec = {**file_spec, "_path_errors": bad_paths}
+                content = await self._generate_file(
+                    file_spec, code_plan, experiment_blueprint, setup_output
+                )
+                (code_dir / filename).write_text(content)
+                self.log(f"Re-generated {filename} to fix invalid paths: {bad_paths}")
+
+        # Step 3: Generate SLURM script
+        slurm_script = await self._generate_slurm_script(
+            code_plan, experiment_blueprint, code_dir
+        )
+        slurm_path = code_dir / "run_train.slurm"
+        slurm_path.write_text(slurm_script)
+        generated_files.append("run_train.slurm")
+        self.log("Generated SLURM script")
+
+        # Step 4: Generate requirements.txt
+        requirements = await self._generate_requirements(code_plan)
+        (code_dir / "requirements.txt").write_text(requirements)
+        generated_files.append("requirements.txt")
+
+        result = {
+            "code_plan": code_plan,
+            "generated_files": generated_files,
+            "code_dir": str(code_dir),
+            "slurm_script": str(slurm_path),
+        }
+
+        self.workspace.write_json("plans/coding_output.json", result)
+        return result
+
+    async def _design_code_plan(
+        self, topic: str, blueprint: dict, setup: dict
+    ) -> dict:
+        """Design the code structure based on blueprint and cloned repos."""
+        code_analysis = setup.get("code_analysis", {})
+        cloned_repos = setup.get("cloned_repos", [])
+        downloaded_resources = setup.get("downloaded_resources", [])
+        data_dir = setup.get("data_dir", "")
+        models_dir = setup.get("models_dir", "")
+
+        # Build resource paths info for the LLM
+        resource_paths = self._format_resource_paths(downloaded_resources, data_dir, models_dir)
+
+        system_prompt = (
+            "You are a senior ML research engineer designing a runnable experiment project. "
+            "Based on the experiment blueprint and analysis of existing codebases, "
+            "design a complete, runnable training project. The code must:\n"
+            "1. Actually run on a GPU cluster via SLURM\n"
+            "2. Use PyTorch and standard ML libraries\n"
+            "3. Include proper training loop, evaluation, checkpointing\n"
+            "4. Log metrics to a results file (JSON or CSV)\n"
+            "5. Support command-line arguments for hyperparameters\n"
+            "6. Use the EXACT data/model paths provided below (data is already downloaded)\n"
+            "7. ONLY use data files listed as AVAILABLE below — never reference NOT AVAILABLE resources\n"
+            "8. If a dataset you need is NOT AVAILABLE, SIMPLIFY your approach to work without it\n"
+            "9. All file paths must be ABSOLUTE paths from the AVAILABLE list, never relative like ./data/\n"
+            "Return JSON only."
+        )
+
+        user_prompt = f"""Topic: {topic}
+
+Experiment Blueprint:
+- Method: {json.dumps(blueprint.get('proposed_method', {}), indent=2)[:1500]}
+- Datasets: {json.dumps(blueprint.get('datasets', []), indent=2)[:500]}
+- Metrics: {json.dumps(blueprint.get('metrics', []), indent=2)[:300]}
+- Baselines: {json.dumps(blueprint.get('baselines', []), indent=2)[:500]}
+
+=== ALREADY DOWNLOADED DATA & MODELS (use these exact paths) ===
+{resource_paths}
+
+Code Analysis from Cloned Repos:
+- Best base repo: {code_analysis.get('best_base_repo', 'N/A')}
+- Reusable components: {json.dumps(code_analysis.get('reusable_components', []), indent=2)[:1000]}
+- Missing components: {json.dumps(code_analysis.get('missing_components', []), indent=2)[:500]}
+- Recommended approach: {code_analysis.get('recommended_approach', 'N/A')[:500]}
+
+Available cloned repos: {json.dumps([r['name'] for r in cloned_repos])}
+
+IMPORTANT: The data and models listed above are ALREADY downloaded. Your code must load them from those exact paths. Do NOT write download logic — data is already there.
+
+CRITICAL CONSTRAINT: Your code must ONLY load data from paths listed as AVAILABLE above.
+- If a dataset is listed as NOT AVAILABLE, do NOT use it. Adapt the method to work without it.
+- Do NOT invent or guess file paths. Only use exact absolute paths from the AVAILABLE list.
+- Do NOT write any download logic (wget, requests.get, urllib) for datasets.
+- Every data loading operation must use a path from the AVAILABLE list.
+- Use ABSOLUTE paths (starting with /) as argparse defaults, never relative paths like ./data/.
+
+Design a runnable project. Return JSON:
+{{
+  "project_name": "experiment_name",
+  "description": "one-line description",
+  "python_version": "3.10",
+  "dependencies": ["torch", "transformers", ...],
+  "files": [
+    {{
+      "path": "train.py",
+      "description": "Main training script with argparse, training loop, evaluation",
+      "is_entrypoint": true
+    }},
+    {{
+      "path": "model.py",
+      "description": "Model architecture definition"
+    }},
+    {{
+      "path": "dataset.py",
+      "description": "Dataset loading and preprocessing"
+    }},
+    {{
+      "path": "evaluate.py",
+      "description": "Evaluation metrics and testing"
+    }},
+    {{
+      "path": "config.py",
+      "description": "Default hyperparameters and configuration"
+    }}
+  ],
+  "train_command": "python train.py --config config.py --epochs 10",
+  "expected_output_files": ["results/metrics.json", "results/training_log.csv", "checkpoints/best_model.pt"]
+}}"""
+
+        result = await self.generate_json(system_prompt, user_prompt)
+        return result if isinstance(result, dict) else {}
+
+    async def _generate_file(
+        self,
+        file_spec: dict,
+        code_plan: dict,
+        blueprint: dict,
+        setup: dict,
+    ) -> str:
+        """Generate a single source file."""
+        code_analysis = setup.get("code_analysis", {})
+        cloned_repos = setup.get("cloned_repos", [])
+        downloaded_resources = setup.get("downloaded_resources", [])
+        data_dir = setup.get("data_dir", "")
+        models_dir = setup.get("models_dir", "")
+
+        resource_paths = self._format_resource_paths(downloaded_resources, data_dir, models_dir)
+
+        # Find relevant reference code from cloned repos
+        reference_code = ""
+        for component in code_analysis.get("reusable_components", [])[:3]:
+            source_file = component.get("source_file", "")
+            if source_file and Path(source_file).exists():
+                try:
+                    content = Path(source_file).read_text(errors="replace")[:3000]
+                    reference_code += f"\n# Reference from {source_file}:\n{content}\n"
+                except Exception:
+                    pass
+        if len(reference_code) > 8000:
+            reference_code = reference_code[:8000]
+
+        system_prompt = (
+            "You are a senior ML engineer writing production-quality research code. "
+            "Write COMPLETE, RUNNABLE Python code. No stubs, no TODOs, no placeholders. "
+            "The code must actually work when executed. "
+            "Use standard PyTorch patterns. Include proper error handling, "
+            "logging, and metric tracking. Save results to JSON/CSV files."
+        )
+
+        all_files = [f.get("path", "") for f in code_plan.get("files", [])]
+
+        user_prompt = f"""Write the complete code for: {file_spec.get('path', '')}
+Description: {file_spec.get('description', '')}
+
+Project structure: {json.dumps(all_files)}
+Method: {json.dumps(blueprint.get('proposed_method', {}), indent=2)[:1000]}
+Datasets: {json.dumps(blueprint.get('datasets', []), indent=2)[:500]}
+Metrics: {json.dumps(blueprint.get('metrics', []), indent=2)[:300]}
+Dependencies: {json.dumps(code_plan.get('dependencies', []))}
+Train command: {code_plan.get('train_command', 'python train.py')}
+
+=== ALREADY DOWNLOADED DATA & MODELS (use these exact paths) ===
+{resource_paths}
+
+{f'Reference code from existing repos:{reference_code}' if reference_code else ''}
+
+IMPORTANT:
+- Write COMPLETE, RUNNABLE code. Every function must be fully implemented.
+- The training script must save metrics to results/metrics.json after each epoch.
+- The training script must save the best model checkpoint.
+- Use argparse for CLI arguments with DEFAULTS pointing to the data/model paths above.
+- Include a results/ directory for outputs.
+- Log training progress (loss, metrics) at each epoch.
+- Handle both training and evaluation in the same script or via flags.
+- CRITICAL: All class/function names used in imports between files MUST be consistent.
+  For example, if train.py does `from dataset import MyDataset`, then dataset.py MUST define `class MyDataset`.
+  Double-check every cross-file import before writing the code.
+- DO NOT write download logic for data/models — they are already downloaded at the paths above.
+- Use the EXACT file paths listed above as argparse defaults.
+- ONLY use file paths from the AVAILABLE list above. If a path is not listed, it does NOT exist.
+- Do NOT use relative paths like ./data/ or ./models/. Use the exact absolute paths provided.
+- If the blueprint mentions a dataset that was NOT downloaded (listed as NOT AVAILABLE), do NOT use it. Adapt your code to work without it.
+
+Return ONLY the Python code, no markdown fences."""
+
+        # If this is a re-generation due to invalid paths, add explicit warning
+        path_errors = file_spec.get("_path_errors", [])
+        if path_errors:
+            user_prompt += (
+                "\n\nWARNING: A previous version of this file referenced these NON-EXISTENT paths:\n"
+                + "\n".join(f"  - {p}" for p in path_errors)
+                + "\nYou MUST NOT reference these paths. Use ONLY paths from the AVAILABLE list above."
+                "\nIf a needed dataset is not in the AVAILABLE list, remove that functionality from the code."
+            )
+
+        content = await self.generate(
+            system_prompt, user_prompt,
+        )
+
+        # Strip markdown fences if present
+        content = content.strip()
+        if content.startswith("```"):
+            lines = content.split("\n")
+            # Remove first and last fence lines
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            content = "\n".join(lines)
+
+        return content
+
+    async def _generate_slurm_script(
+        self, code_plan: dict, blueprint: dict, code_dir: Path
+    ) -> str:
+        """Generate a SLURM batch script for training."""
+        compute = blueprint.get("compute_requirements", {})
+        num_gpus = min(compute.get("num_gpus", 1), 4)  # cap at 4
+        train_cmd = code_plan.get("train_command", "python train.py")
+        project_name = code_plan.get("project_name", "experiment")
+
+        script = f"""#!/bin/bash
+#SBATCH --job-name={project_name[:15]}
+#SBATCH --partition=belt_road
+#SBATCH --quotatype=reserved
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:{num_gpus}
+#SBATCH --time=7-00:00:00
+#SBATCH --output={code_dir}/logs/slurm_%j.out
+#SBATCH --error={code_dir}/logs/slurm_%j.err
+
+echo "========================================"
+echo "Job ID: $SLURM_JOB_ID"
+echo "Node: $SLURM_NODELIST"
+echo "GPUs: $CUDA_VISIBLE_DEVICES"
+echo "Start: $(date)"
+echo "========================================"
+
+# Setup environment
+source ~/anaconda3/etc/profile.d/conda.sh
+conda activate torch
+
+# Enable proxy for downloading models/data
+export https_proxy=http://xujinhang:RgvPm7Q6OM12cWZA6hzuVxIlVR7v6GoJLmcTOQcpq76H9Np2ZSTQDyBN74Jx@10.1.20.51:23128/
+export http_proxy=$https_proxy
+
+# Create output directories
+mkdir -p {code_dir}/results
+mkdir -p {code_dir}/checkpoints
+mkdir -p {code_dir}/logs
+
+# Install requirements
+cd {code_dir}
+pip install -r requirements.txt --quiet 2>/dev/null || true
+
+# Run training
+echo "Starting training..."
+{train_cmd}
+
+EXIT_CODE=$?
+
+echo "========================================"
+echo "End: $(date)"
+echo "Exit code: $EXIT_CODE"
+echo "========================================"
+
+exit $EXIT_CODE
+"""
+        return script
+
+    def _format_resource_paths(
+        self, resources: list[dict], data_dir: str, models_dir: str
+    ) -> str:
+        """Format downloaded resource paths for inclusion in prompts.
+
+        Splits resources into AVAILABLE and NOT AVAILABLE sections so the LLM
+        knows exactly what it can and cannot use.
+        """
+        lines = []
+        if data_dir:
+            lines.append(f"Data directory: {data_dir}")
+        if models_dir:
+            lines.append(f"Models directory: {models_dir}")
+        lines.append("")
+
+        available = []
+        unavailable = []
+
+        for r in resources:
+            status = r.get("status", "unknown")
+            path = r.get("path", "N/A")
+            name = r.get("name", "unknown")
+            rtype = r.get("type", "unknown")
+            size = r.get("size_bytes", 0)
+
+            if status in ("downloaded", "full", "config_only"):
+                size_str = f" ({size / 1024 / 1024:.1f} MB)" if size else ""
+                available.append(f"  - [{rtype}] {name}: {path}{size_str}")
+                if r.get("files"):
+                    for f in r["files"][:10]:
+                        available.append(f"      - {f}")
+            else:
+                unavailable.append(f"  - [{rtype}] {name}: NOT AVAILABLE ({r.get('error', status)})")
+
+        lines.append("=== AVAILABLE (you may ONLY use these) ===")
+        lines.extend(available if available else ["  (none)"])
+        lines.append("")
+        lines.append("=== NOT AVAILABLE (do NOT reference these in code) ===")
+        lines.extend(unavailable if unavailable else ["  (none)"])
+
+        return "\n".join(lines)
+
+    async def _generate_requirements(self, code_plan: dict) -> str:
+        """Generate requirements.txt from code plan."""
+        deps = code_plan.get("dependencies", [])
+        if not deps:
+            deps = ["torch", "numpy", "pandas", "scikit-learn", "matplotlib", "tqdm"]
+
+        # Ensure core deps are present
+        essential = {"torch", "numpy"}
+        for d in essential:
+            if d not in deps:
+                deps.append(d)
+
+        return "\n".join(sorted(set(deps))) + "\n"
+
+    def _validate_data_paths(
+        self, code_dir: Path, downloaded_resources: list[dict],
+        data_dir: str, models_dir: str,
+    ) -> list[dict]:
+        """Scan generated code for file path references and check they exist."""
+        # Collect all known-good paths and their parents
+        valid_paths: set[str] = set()
+        for d in (data_dir, models_dir):
+            if d:
+                valid_paths.add(d)
+        for r in downloaded_resources:
+            if r.get("status") in ("downloaded", "full", "config_only"):
+                p = r.get("path", "")
+                if p:
+                    valid_paths.add(p)
+                    valid_paths.add(str(Path(p).parent))
+
+        # Also include the experiment directory itself (results/, checkpoints/, etc.)
+        valid_paths.add(str(code_dir))
+
+        path_patterns = [
+            r'''open\s*\(\s*[f]?['"](\/[^'"]+)['"]''',
+            r'''Path\s*\(\s*[f]?['"](\/[^'"]+)['"]''',
+            r'''pd\.read_csv\s*\(\s*[f]?['"](\/[^'"]+)['"]''',
+            r'''pd\.read_table\s*\(\s*[f]?['"](\/[^'"]+)['"]''',
+            r'''default\s*=\s*['"](\/[^'"]+)['"]''',
+            r'''["\'](\/.+?(?:\.csv|\.tsv|\.obo|\.gaf|\.txt|\.gz|\.fasta|\.fa|\.pdb|\.pkl|\.h5|\.hdf5))["\']''',
+        ]
+
+        issues = []
+        seen: set[tuple[str, str]] = set()
+        for py_file in code_dir.glob("*.py"):
+            content = py_file.read_text(errors="replace")
+            for pattern in path_patterns:
+                for match in _re.finditer(pattern, content):
+                    ref_path = match.group(1)
+                    if not ref_path or not ref_path.startswith("/"):
+                        continue
+                    key = (py_file.name, ref_path)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    # Skip if path exists on disk
+                    if Path(ref_path).exists():
+                        continue
+                    # Skip if under a known valid directory
+                    if any(ref_path.startswith(vp) for vp in valid_paths if vp):
+                        continue
+                    issues.append({
+                        "file": py_file.name,
+                        "path": ref_path,
+                    })
+
+        return issues
+
+    async def _fix_import_mismatches(self, code_dir: Path, code_plan: dict) -> None:
+        """Scan all generated files for cross-file import mismatches and fix them via LLM."""
+        import re as _re
+
+        # Collect all defined classes/functions and all imports
+        definitions: dict[str, list[str]] = {}  # filename -> [class/func names]
+        imports: list[dict] = []  # [{importer, module, names}]
+
+        for py_file in code_dir.glob("*.py"):
+            content = py_file.read_text(errors="replace")
+            module_name = py_file.stem
+
+            # Find class and top-level function definitions
+            defs = []
+            for m in _re.finditer(r"^(?:class|def)\s+(\w+)", content, _re.MULTILINE):
+                defs.append(m.group(1))
+            definitions[module_name] = defs
+
+            # Find cross-file imports: from X import Y, Z
+            for m in _re.finditer(
+                r"^from\s+(\w+)\s+import\s+(.+)$", content, _re.MULTILINE
+            ):
+                src_module = m.group(1)
+                imported_names = [
+                    n.strip().split(" as ")[0].strip()
+                    for n in m.group(2).split(",")
+                ]
+                imports.append({
+                    "importer": py_file.name,
+                    "module": src_module,
+                    "names": imported_names,
+                })
+
+        # Check for mismatches
+        mismatches = []
+        for imp in imports:
+            module = imp["module"]
+            if module not in definitions:
+                continue  # external module
+            defined = set(definitions[module])
+            for name in imp["names"]:
+                if name and name not in defined:
+                    mismatches.append({
+                        "importer": imp["importer"],
+                        "module": module,
+                        "missing_name": name,
+                        "available": sorted(defined),
+                    })
+
+        if not mismatches:
+            self.log("Import consistency check passed")
+            return
+
+        self.log(f"Found {len(mismatches)} import mismatches, asking LLM to fix")
+
+        # Read all source files
+        all_sources = {}
+        for py_file in code_dir.glob("*.py"):
+            all_sources[py_file.name] = py_file.read_text(errors="replace")
+
+        source_listing = ""
+        for fname, content in sorted(all_sources.items()):
+            source_listing += f"\n# FILE: {fname}\n{content}\n"
+
+        system_prompt = (
+            "You are fixing import mismatches between Python files in a project. "
+            "Some files import names that don't exist in the target module. "
+            "Fix this by either renaming the import or adding the missing class/function. "
+            "Prefer renaming the import to match what's defined. "
+            "Return JSON with patches."
+        )
+
+        mismatch_desc = json.dumps(mismatches, indent=2)
+        user_prompt = f"""Import mismatches found:
+{mismatch_desc}
+
+Source files:
+{source_listing[:15000]}
+
+Return JSON:
+{{
+  "patches": [
+    {{
+      "file": "filename.py",
+      "old": "exact text to replace",
+      "new": "replacement text",
+      "description": "what this fixes"
+    }}
+  ]
+}}"""
+
+        try:
+            result = await self.generate_json(system_prompt, user_prompt)
+            patches = result.get("patches", [])
+
+            for patch in patches:
+                filepath = code_dir / patch.get("file", "")
+                old_text = patch.get("old", "")
+                new_text = patch.get("new", "")
+                if filepath.exists() and old_text and new_text:
+                    content = filepath.read_text(errors="replace")
+                    if old_text in content:
+                        filepath.write_text(content.replace(old_text, new_text, 1))
+                        self.log(f"Fixed import mismatch in {patch['file']}: {patch.get('description', '')}")
+
+        except Exception as e:
+            self.log(f"Import fix failed (non-fatal): {e}")
+
+    async def close(self) -> None:
+        pass
