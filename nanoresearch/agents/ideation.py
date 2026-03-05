@@ -68,14 +68,15 @@ async def _get_github_search():
 
 from nanoresearch.skill_prompts import IDEATION_SKILL
 
-IDEATION_SYSTEM_PROMPT = f"""You are a research ideation assistant for top-tier AI venues. Your task is to:
+IDEATION_SYSTEM_PROMPT = """You are a research ideation assistant. Your task is to:
 1. Generate effective search queries for the given research topic
 2. Analyze retrieved papers to identify research gaps
 3. Formulate novel hypotheses that address those gaps
 
-{IDEATION_SKILL}
-
 Always respond in valid JSON format matching the schema provided."""
+
+# IDEATION_SKILL is injected into user prompts of _analyze_and_hypothesize(),
+# not into the system prompt (which is reused across many calls).
 
 
 class IdeationAgent(BaseResearchAgent):
@@ -591,6 +592,8 @@ I searched using these queries: {json.dumps(queries)}
 
 Here are the retrieved papers:
 {papers_text}
+
+{IDEATION_SKILL}
 
 Analyze these papers and produce a JSON object with:
 1. "survey_summary": A 300-500 word narrative summarizing the state of the field.

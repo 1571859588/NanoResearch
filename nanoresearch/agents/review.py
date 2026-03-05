@@ -24,12 +24,10 @@ MAX_LATEX_FIX_ATTEMPTS = 3  # compile-fix loop iterations
 MIN_SECTION_SCORE = 8  # Sections scoring below this get revised
 CONVERGENCE_THRESHOLD = 0.3  # Stop if avg score improves by less than this
 
-from nanoresearch.skill_prompts import REVIEW_SKILL
+from nanoresearch.skill_prompts import get_review_guidance
 
-REVIEW_SYSTEM_PROMPT = f"""You are an expert academic paper reviewer for a top-tier venue (NeurIPS, ICML, CVPR, ACL).
-
-{REVIEW_SKILL}
-
+REVIEW_SYSTEM_PROMPT = """You are an expert academic paper reviewer for a top-tier venue (NeurIPS, ICML, CVPR, ACL).
+Evaluate technical correctness, completeness, clarity, citations, reproducibility, and consistency.
 Always respond in valid JSON format."""
 
 REVISION_SYSTEM_PROMPT = """You are an expert academic paper writer revising a section for a top-tier AI venue (NeurIPS, ICML, CVPR, ACL).
@@ -449,35 +447,6 @@ class ReviewAgent(BaseResearchAgent):
             }
         return None
 
-    # Section → relevant ScholarEval dimensions for focused review
-    _SECTION_REVIEW_FOCUS: dict[str, str] = {
-        "Introduction": (
-            "Focus on: Problem Formulation (clarity, significance, novelty), "
-            "Literature context (are key works cited?), and Writing Quality (logical flow from "
-            "problem→gap→contribution)."
-        ),
-        "Related Work": (
-            "Focus on: Literature Review (comprehensive? thematic synthesis or study-by-study listing?), "
-            "Citations (seminal papers missing? balanced perspectives?), "
-            "and whether it clearly positions the proposed method vs. prior work."
-        ),
-        "Method": (
-            "Focus on: Methodology (rigor, reproducibility, appropriateness), "
-            "technical correctness (equations correct? notation consistent?), "
-            "and completeness (all components described? design choices justified?)."
-        ),
-        "Experiments": (
-            "Focus on: Data/Evidence (datasets appropriate? baselines sufficient?), "
-            "Analysis (ablations for each contribution? statistical rigor? error bars?), "
-            "Results (clear presentation? tables/figures well-designed?), "
-            "and cross-check: every contribution from Intro must have corresponding evidence here."
-        ),
-        "Conclusion": (
-            "Focus on: Writing Quality (concise summary? no over-claiming?), "
-            "limitations honestly acknowledged, and future directions are specific not generic."
-        ),
-    }
-
     async def _review_single_section(
         self,
         heading: str,
@@ -487,12 +456,8 @@ class ReviewAgent(BaseResearchAgent):
         review_config: Any,
     ) -> SectionReview:
         """Review a single section of the paper."""
-        # Pick section-specific review focus
-        focus = ""
-        for key, guidance in self._SECTION_REVIEW_FOCUS.items():
-            if key.lower() in heading.lower():
-                focus = f"\n\nSECTION-SPECIFIC FOCUS:\n{guidance}"
-                break
+        # Per-call skill guidance (~150 tokens, not in system prompt)
+        skill_guidance = get_review_guidance(heading)
 
         prompt = f"""Review the following section of an academic paper:
 
@@ -506,10 +471,9 @@ Research context:
 - Topic: {str(ideation_output.get('topic', 'Unknown'))[:500]}
 - Hypothesis: {str(ideation_output.get('selected_hypothesis', 'Unknown'))[:500]}
 - Method: {str((experiment_blueprint.get('proposed_method') or {}).get('name', 'Unknown'))[:500]}
-{focus}
-
+{skill_guidance}
 Provide:
-1. A quality score (1-10) using the ScholarEval rubric in the system prompt
+1. A quality score (1-10) where 9-10=publication-ready, 7-8=solid, 5-6=significant issues, 3-4=major rewrite, 1-2=flawed
 2. Up to 5 specific issues — each must state: what is wrong, why it matters, and how to fix it
 3. Up to 3 actionable suggestions for improvement
 

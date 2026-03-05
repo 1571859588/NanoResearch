@@ -1,172 +1,149 @@
 """Condensed skill guidance extracted from K-Dense scientific skills.
 
-Each constant provides focused, actionable instructions for a specific
-pipeline stage.  They are injected into agent system prompts to improve
-output quality without blowing up token budgets (~500-800 tokens each).
+Architecture: skill guidance is injected **per-call into user prompts** (not system
+prompts) to minimize token overhead.  Only the guidance relevant to the current
+section / task is included.
+
+Functions return focused fragments (~100-200 tokens) instead of monolithic blocks.
 """
 
-# ---------------------------------------------------------------------------
-# IDEATION — from literature-review + scientific-brainstorming
-# ---------------------------------------------------------------------------
-IDEATION_SKILL = """
-=== LITERATURE REVIEW STANDARDS ===
+from __future__ import annotations
 
-SEARCH STRATEGY:
-- Use 2-4 main concepts per query with synonyms and abbreviations.
-- Boolean operators: combine concepts with AND, use OR for synonyms.
-- Search at least 2 complementary databases (Semantic Scholar + arXiv).
-- Use citation chaining: trace forward citations of key papers.
 
-PAPER QUALITY TIERS (prioritize higher tiers):
-- Tier 1: Nature, Science, Cell, PNAS, NeurIPS, ICML, ICLR, CVPR, ACL
-- Tier 2: High-impact specialized journals (IF>10), top workshops
-- Tier 3: Specialized journals (IF 5-10)
-- Tier 4: Lower-impact peer-reviewed (use sparingly)
-
-CITATION COUNT SIGNIFICANCE (by age):
-- 0-3 years: 20+ noteworthy, 100+ highly influential
-- 3-7 years: 100+ significant, 500+ landmark
-- 7+ years: 500+ seminal, 1000+ foundational
-
-SYNTHESIS RULES:
+# ═══════════════════════════════════════════════════════════════════════════
+# IDEATION — injected once per LLM call in _analyze_and_hypothesize
+# Kept as a constant because ideation calls are few (~5-10 per run).
+# ═══════════════════════════════════════════════════════════════════════════
+IDEATION_SKILL = """\
+LITERATURE STANDARDS:
+- Prioritize Tier 1 venues (Nature, Science, NeurIPS, ICML, ICLR, CVPR, ACL, PNAS).
+- Citation significance: 0-3yr 100+=influential, 3-7yr 500+=landmark, 7yr+ 1000+=foundational.
 - Organize findings thematically, NOT study-by-study.
-- Identify consensus areas AND controversies.
-- Extract specific quantitative comparisons (acc, F1, latency).
-- Note methodological variations and their impact on results.
-- Identify seminal/foundational papers that MUST be cited.
+- Each hypothesis must be testable with concrete quantitative predictions.
+- Identify which components drive the improvement (for ablation design)."""
 
-HYPOTHESIS GENERATION:
-- Each hypothesis must be testable with concrete predictions.
-- State expected quantitative improvements over baselines.
-- Identify which components drive the improvement (for ablation).
-- Consider failure modes and boundary conditions.
-"""
 
-# ---------------------------------------------------------------------------
-# WRITING — from scientific-writing + citation-management
-# ---------------------------------------------------------------------------
-WRITING_SKILL = """
-=== SCIENTIFIC WRITING STANDARDS ===
+# ═══════════════════════════════════════════════════════════════════════════
+# WRITING — per-section injection via get_writing_guidance(section_heading)
+# ═══════════════════════════════════════════════════════════════════════════
+_WRITING_CORE = """\
+WRITING PROCESS: First mentally outline key points and citations, then convert to
+flowing prose. Every sentence connects logically. Use transitions (however, moreover,
+in contrast). Integrate citations naturally within sentences — NOT as disconnected lists.
+NEVER output bullet points — only LaTeX paragraphs."""
 
-TWO-STAGE PROCESS (apply for each section):
-Stage 1 — OUTLINE: Identify key points, arguments, data to present, papers to cite.
-Stage 2 — PROSE: Convert outline into flowing paragraphs. Every sentence must connect
-    logically to the next. Add transitions (however, moreover, in contrast).
+_WRITING_SECTIONS: dict[str, str] = {
+    "introduction": (
+        "Structure: Problem importance -> Literature gaps -> Research questions -> "
+        "Novelty and contributions. End with a clear contribution list that maps 1:1 "
+        "to experiments. Use present tense for established facts, past tense for "
+        "specific prior work."
+    ),
+    "related work": (
+        "Write THEMATIC synthesis, NOT study-by-study listing. Group by approach type, "
+        "compare strengths/limitations within each theme, then position your method. "
+        "BAD: 'X did A. Y did B. Z did C.' "
+        "GOOD: 'Attention-based approaches (X; Y) improved Z but remain limited by W, "
+        "which our method addresses via...'"
+    ),
+    "method": (
+        "Reproducible detail: state every design choice with justification. "
+        "Include equations for all non-trivial operations using \\begin{equation}. "
+        "Define all notation on first use. Use algorithmic pseudocode for complex procedures. "
+        "Every component must appear in experiments (ablation or main result)."
+    ),
+    "experiment": (
+        "Must include: datasets (with stats), baselines (with citations), metrics, "
+        "implementation details (lr, batch, epochs, hardware). Present results WITH analysis — "
+        "don't just state numbers. Every contribution from Introduction needs evidence here. "
+        "Include ablation study removing each proposed component individually."
+    ),
+    "conclusion": (
+        "Concise summary of findings — no new information. Acknowledge limitations honestly "
+        "(not just 'future work'). Future directions must be specific, not generic. "
+        "Do NOT overstate claims beyond what experiments support."
+    ),
+}
 
-SECTION-SPECIFIC RULES:
-- Introduction: Importance → Literature gaps → Research questions → Novelty + contributions
-- Related Work: Thematic synthesis (NOT study-by-study listing). Compare approaches,
-  highlight limitations, position your method.
-- Methods: Reproducible detail. State design choices with justification.
-  Include equations for all non-trivial operations.
-- Experiments: Datasets, baselines, metrics, implementation details (lr, batch, epochs).
-  Present results with analysis — don't just state numbers.
-- Discussion/Conclusion: Relate to questions, compare with literature, acknowledge
-  limitations honestly, suggest future directions.
 
-CITATION INTEGRATION:
-- Embed citations naturally within sentences, not as disconnected lists.
-- GOOD: "\\citet{smith2023} first demonstrated X, which \\citet{jones2024} extended to Y."
-- BAD: "Several studies have shown this \\citep{smith2023, jones2024, lee2022}."
-- Use \\citet when authors are grammatical subjects, \\citep for parenthetical.
-- Balance citations: every claim needs support, but don't over-cite (3-5 refs per paragraph max).
+def get_writing_guidance(section_heading: str) -> str:
+    """Return focused writing guidance for a specific section (~100-150 tokens).
 
-ANTI-PATTERNS (never do these):
-- Bullet points in any final section (only allowed in Methods for criteria lists)
-- Labeled abstract sub-sections (Background:, Methods:, etc.)
-- Mixing tenses: past for methods/results, present for established facts/discussion
-- Vague filler: "it is well known", "has attracted attention", "in recent years"
-- Study-by-study literature summaries: "X did A. Y did B. Z did C."
+    Injected into the user prompt of _generate_section(), not the system prompt.
+    """
+    heading_lower = section_heading.lower()
+    specific = ""
+    for key, guidance in _WRITING_SECTIONS.items():
+        if key in heading_lower:
+            specific = f"\nSECTION FOCUS ({section_heading}): {guidance}"
+            break
+    return f"\n{_WRITING_CORE}{specific}\n"
 
-BIBTEX RULES:
-- Citation key format: FirstAuthorYYYYkeyword (e.g., smith2023attention)
-- Use -- for page ranges (not single dash)
-- Always include DOI when available
-- Protect capitalization with braces: title = {{BERT}: Pre-Training of ...}
-"""
 
-# ---------------------------------------------------------------------------
-# REVIEW — from peer-review + scholar-evaluation (ScholarEval framework)
-# ---------------------------------------------------------------------------
-REVIEW_SKILL = """
-=== SCHOLAREVAL REVIEW FRAMEWORK ===
+# ═══════════════════════════════════════════════════════════════════════════
+# REVIEW — per-section injection via get_review_guidance(section_heading)
+# ═══════════════════════════════════════════════════════════════════════════
+_REVIEW_CORE = """\
+SCORING: 9-10=publication-ready, 7-8=solid with fixable issues, 5-6=significant problems, \
+3-4=major rewrite, 1-2=fundamentally flawed.
+FEEDBACK: Every issue must state (a) problem, (b) why it matters, (c) specific fix. No vague criticism."""
 
-EVALUATE ACROSS 8 DIMENSIONS (assess each):
-1. Problem Formulation — clarity, significance, novelty of research questions
-2. Literature Review — comprehensiveness, critical synthesis, gap identification
-3. Methodology — rigor, reproducibility, appropriateness for research questions
-4. Data/Evidence — quality, sample size, source credibility
-5. Analysis — method appropriateness, logical coherence, alternatives considered
-6. Results — clarity of presentation, statistical rigor, visualization quality
-7. Writing Quality — organization, logical flow, accessibility, notation consistency
-8. Citations — completeness, accuracy, balance of perspectives
+_REVIEW_SECTIONS: dict[str, str] = {
+    "introduction": (
+        "Check: Problem clearly defined? Key prior work cited? Gap explicitly stated? "
+        "Contributions specific and testable? Each contribution maps to an experiment?"
+    ),
+    "related work": (
+        "Check: Thematic organization (not study-by-study)? Seminal papers present? "
+        "Clear positioning of proposed method vs. prior work? Balanced perspectives?"
+    ),
+    "method": (
+        "Check: Equations correct? Notation consistent with other sections? "
+        "All components justified? Reproducible from description alone? "
+        "Design choices explained (why this architecture, not alternatives)?"
+    ),
+    "experiment": (
+        "Check: Sufficient baselines? Ablation for each claimed contribution? "
+        "Error bars / std present? Implementation details for reproducibility? "
+        "Every Intro contribution has corresponding evidence here?"
+    ),
+    "conclusion": (
+        "Check: Claims supported by actual results (no over-claiming)? "
+        "Limitations honest and specific? Future directions actionable?"
+    ),
+}
 
-SCORING SCALE (per section):
-  9-10: Publication-ready at top venue, only minor polishing
-  7-8: Solid contribution with identifiable but fixable weaknesses
-  5-6: Significant issues that need substantial addressing
-  3-4: Major rewrite needed, fundamental gaps in one or more dimensions
-  1-2: Fundamentally flawed, would require complete rethinking
+_REVIEW_RED_FLAGS = (
+    "RED FLAGS: Overstated conclusions, missing ablation, inconsistent notation, "
+    "no error bars, causal claims from correlational data, selective reporting, "
+    "SOTA claims without proper baselines."
+)
 
-STRUCTURED FEEDBACK FORMAT:
-For each section produce:
-- Score (integer 1-10)
-- Major Issues: each stating (a) the problem, (b) why it matters, (c) specific fix
-- Minor Issues: with location and suggestion
-- DO NOT give vague criticism — every issue must be actionable
 
-RED FLAGS TO CATCH:
-- Overstated conclusions not supported by experimental evidence
-- Missing ablation for claimed contributions
-- Inconsistent notation between sections
-- Missing error bars, std, or confidence intervals in result tables
-- Causal claims from correlational evidence
-- Selective reporting (only showing favorable metrics/datasets)
-- Claims of SOTA without proper baselines or statistical testing
-- Related work missing seminal papers in the field
+def get_review_guidance(section_heading: str) -> str:
+    """Return focused review guidance for a specific section (~100-150 tokens).
 
-REVISION GUIDANCE:
-- Each issue must map to a concrete edit (add equation, add citation, rewrite paragraph)
-- Prioritize: correctness > completeness > clarity > style
-- For low-score sections (<=5): provide a structural outline of what the section should contain
-"""
+    Injected into the user prompt of _review_single_section().
+    """
+    heading_lower = section_heading.lower()
+    specific = ""
+    for key, guidance in _REVIEW_SECTIONS.items():
+        if key in heading_lower:
+            specific = f"\nFOCUS: {guidance}"
+            break
+    return f"\n{_REVIEW_CORE}{specific}\n{_REVIEW_RED_FLAGS}\n"
 
-# ---------------------------------------------------------------------------
-# FIGURE_GEN — from scientific-visualization (supplements existing CHART_CODE_SYSTEM)
-# ---------------------------------------------------------------------------
-FIGURE_SKILL = """
-=== PUBLICATION FIGURE QUALITY CHECKLIST ===
 
-MANDATORY FOR EVERY FIGURE:
-- All axes labeled with descriptive name AND units: "Accuracy (%)", "Latency (ms)"
-- Error bars present when data has variance (define SD/SEM/CI in caption)
-- Sample size (n) stated in caption or on figure
-- No title inside figure — LaTeX caption serves as title
-
-CHART TYPE SELECTION:
-- Bar charts: comparing discrete categories/methods (main results, ablation)
-- Line plots: trends over continuous variable (training curves, scaling)
-- Heatmaps: correlation matrices, attention maps, confusion matrices
-- Box/violin plots: distribution comparison across groups
-- Scatter plots: relationship between two continuous variables
-
-ACCESSIBILITY (non-negotiable):
-- Use Okabe-Ito palette (already in rcParams)
-- Add redundant encoding: different line styles (-, --, :, -.) AND markers (o, s, D, ^)
-- Add hatching patterns (/, \\, x, o) for bar charts
-- Ensure figure is readable in grayscale
-- Never use jet/rainbow colormaps
-
-MULTI-PANEL LAYOUT:
-- Label panels (a), (b), (c) in upper-left, bold, fontsize=12
-- Consistent styling across panels (same font, colors, line widths)
-- Shared legend below figure when panels share the same categories
-- Reserve space: plt.subplots_adjust(bottom=0.18) for bottom legend
-
-COMMON MISTAKES TO AVOID:
-- Font too small (unreadable at print size)
-- Truncated axis that exaggerates differences
-- 3D effects or chart junk
-- Missing units on axes
-- Inconsistent color assignment across figures (same method = same color everywhere)
-"""
+# ═══════════════════════════════════════════════════════════════════════════
+# FIGURE_GEN — appended to the per-figure user prompt, not system prompt.
+# The existing CHART_CODE_SYSTEM already has detailed styling rules;
+# this adds a concise quality checklist.
+# ═══════════════════════════════════════════════════════════════════════════
+FIGURE_CHECKLIST = """\
+QUALITY CHECKLIST (verify before outputting):
+- All axes labeled with units ("Accuracy (%)", "Latency (ms)")
+- Error bars when std available (define SD/SEM in caption)
+- No title inside figure (LaTeX caption = title)
+- Redundant encoding: line styles + markers + colors
+- Readable in grayscale (hatching for bars)
+- Proposed method always COLORS[0], consistent across figures"""
