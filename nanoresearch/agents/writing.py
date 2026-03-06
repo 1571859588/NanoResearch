@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Configurable limits
 MAX_PAPERS_FOR_CITATIONS = 50
-MAX_LATEX_FIX_ATTEMPTS = 3
+MAX_LATEX_FIX_ATTEMPTS = 5
 
 # Legacy aliases — now each section gets its own system prompt via
 # get_writing_system_prompt(heading), but some internal methods still
@@ -515,10 +515,16 @@ Every component listed above should appear in the ablation table.
         main_results = experiment_results.get("main_results", [])
         if not isinstance(main_results, list):
             main_results = []
+
+        # Also accept analysis-format results (from AnalysisAgent)
+        final_metrics = experiment_results.get("final_metrics", {})
+        comparison = experiment_results.get("comparison_with_baselines", {})
+        key_findings = experiment_results.get("key_findings", [])
+
         has_real = bool(
             experiment_results
             and experiment_status.lower() in ("success", "completed")
-            and main_results
+            and (main_results or final_metrics)
         )
 
         if has_real:
@@ -528,6 +534,7 @@ Every component listed above should appear in the ablation table.
                 "in tables, text, and analysis. Do NOT round, adjust, or fabricate.",
                 "",
             ]
+            # Format 1: structured main_results
             for entry in main_results:
                 if not isinstance(entry, dict):
                     continue
@@ -545,6 +552,47 @@ Every component listed above should appear in the ablation table.
                         f"  {method} on {dataset}: "
                         f"{metric.get('metric_name', '?')} = {val}{std_str}{tag}"
                     )
+
+            # Format 2: analysis-format results (final_metrics dict)
+            if final_metrics and not main_results:
+                lines.append("--- Final Metrics ---")
+                for k, v in final_metrics.items():
+                    if isinstance(v, float):
+                        lines.append(f"  {k}: {v:.4f}")
+                    else:
+                        lines.append(f"  {k}: {v}")
+
+            if comparison:
+                lines.append("")
+                lines.append("--- Comparison with Baselines ---")
+                if isinstance(comparison, dict):
+                    for k, v in comparison.items():
+                        lines.append(f"  {k}: {v}")
+                elif isinstance(comparison, list):
+                    for entry in comparison:
+                        lines.append(f"  {entry}")
+
+            if key_findings:
+                lines.append("")
+                lines.append("--- Key Findings ---")
+                for f in key_findings:
+                    lines.append(f"  - {f}")
+
+            # Include training dynamics summary if available
+            training_dynamics = experiment_results.get("training_dynamics", {})
+            if training_dynamics:
+                lines.append("")
+                lines.append("--- Training Dynamics ---")
+                if isinstance(training_dynamics, dict):
+                    for k, v in training_dynamics.items():
+                        lines.append(f"  {k}: {v}")
+
+            # Include raw summary from analysis
+            summary = experiment_results.get("summary", "")
+            if summary:
+                lines.append("")
+                lines.append(f"--- Summary ---")
+                lines.append(f"  {summary}")
 
             ablation = experiment_results.get("ablation_results", [])
             if not isinstance(ablation, list):
@@ -637,31 +685,47 @@ Every component listed above should appear in the ablation table.
                     ):
                         blocks[alias] = block
         else:
-            # Fallback: assume standard 3-figure layout
-            blocks["architecture"] = (
-                "\\begin{figure}[H]\n"
-                "\\centering\n"
-                "\\includegraphics[width=\\textwidth]{fig1_architecture.pdf}\n"
-                "\\caption{Overview of the proposed model architecture.}\n"
-                "\\label{fig:architecture}\n"
-                "\\end{figure}"
-            )
-            blocks["results"] = (
-                "\\begin{figure}[H]\n"
-                "\\centering\n"
-                "\\includegraphics[width=\\textwidth]{fig2_results.pdf}\n"
-                "\\caption{Performance comparison.}\n"
-                "\\label{fig:results}\n"
-                "\\end{figure}"
-            )
-            blocks["ablation"] = (
-                "\\begin{figure}[H]\n"
-                "\\centering\n"
-                "\\includegraphics[width=\\textwidth]{fig3_ablation.pdf}\n"
-                "\\caption{Ablation study.}\n"
-                "\\label{fig:ablation}\n"
-                "\\end{figure}"
-            )
+            # Fallback: scan the drafts directory for any generated figure files
+            # instead of assuming hardcoded fig1_, fig2_, fig3_ names
+            drafts_dir = self.workspace.path / "drafts" if hasattr(self, "workspace") else None
+            fig_files = []
+            if drafts_dir and drafts_dir.exists():
+                fig_files = sorted(drafts_dir.glob("fig_*.pdf")) + sorted(drafts_dir.glob("fig_*.png"))
+
+            if fig_files:
+                # Use actual generated files
+                seen_stems = set()
+                for fig_path in fig_files:
+                    stem = fig_path.stem  # e.g., "fig_training_curve"
+                    if stem in seen_stems:
+                        continue
+                    seen_stems.add(stem)
+                    # Derive label from stem: fig_training_curve -> training_curve
+                    label_suffix = stem.replace("fig_", "", 1) if stem.startswith("fig_") else stem
+                    caption = label_suffix.replace("_", " ").title()
+                    include_name = fig_path.name
+                    block = (
+                        "\\begin{figure}[H]\n"
+                        "\\centering\n"
+                        f"\\includegraphics[width=0.9\\textwidth]{{{include_name}}}\n"
+                        f"\\caption{{{caption}.}}\n"
+                        f"\\label{{fig:{label_suffix}}}\n"
+                        "\\end{figure}"
+                    )
+                    blocks[label_suffix] = block
+                    # Map common aliases
+                    for alias in ("architecture", "results", "ablation"):
+                        if alias not in blocks and (
+                            label_suffix == alias or label_suffix.endswith(f"_{alias}")
+                        ):
+                            blocks[alias] = block
+            else:
+                # No figures at all — provide empty blocks so tex compiles
+                self.log("WARNING: No figures available for paper")
+                for alias in ("architecture", "results", "ablation"):
+                    blocks[alias] = (
+                        f"% Figure '{alias}' not available\n"
+                    )
 
         return blocks
 
@@ -1064,16 +1128,121 @@ Output ONLY the LaTeX paragraphs for this section. Do not include \\section comm
         ])
         return "\n".join(lines)
 
+    def _deterministic_latex_fixes(self, tex_source: str, tex_dir: Path) -> tuple[str, list[str]]:
+        """Apply rule-based fixes to common LaTeX errors BEFORE calling the LLM.
+
+        Returns (fixed_tex, list_of_fixes_applied).
+        """
+        fixes: list[str] = []
+        text = tex_source
+
+        # 1. Fix missing figure files: comment out \includegraphics for non-existent files
+        def _fix_missing_figure(m):
+            filename = m.group(1)
+            fig_path = tex_dir / filename
+            if not fig_path.exists():
+                # Try to find a similar file
+                stem = Path(filename).stem
+                candidates = list(tex_dir.glob("fig_*.pdf")) + list(tex_dir.glob("fig_*.png"))
+                if candidates:
+                    replacement = candidates[0].name
+                    fixes.append(f"Replaced missing '{filename}' with '{replacement}'")
+                    return m.group(0).replace(filename, replacement)
+                else:
+                    fixes.append(f"Commented out missing figure '{filename}'")
+                    return f"% MISSING: {m.group(0)}"
+            return m.group(0)
+
+        text = re.sub(
+            r'\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}',
+            _fix_missing_figure,
+            text,
+        )
+
+        # 2. Fix doubled @{} in tabular column specs (e.g., @{@{}} or @{}@{})
+        def _fix_doubled_at_braces(m):
+            spec = m.group(1)
+            original = spec
+            # Remove any @{@{}} patterns (nested/doubled)
+            while "@{@{}}" in spec or "@{}@{}" in spec:
+                spec = spec.replace("@{@{}}", "@{}")
+                spec = spec.replace("@{}@{}", "@{}")
+            if spec != original:
+                fixes.append(f"Fixed doubled @{{}} in tabular: '{original}' -> '{spec}'")
+            return f"\\begin{{tabular}}{{{spec}}}"
+
+        text = re.sub(
+            r'\\begin\{tabular\}\{(.+)\}',
+            _fix_doubled_at_braces,
+            text,
+        )
+
+        # 3. Unicode character replacements
+        unicode_map = {
+            '\u2014': '---',   # em-dash
+            '\u2013': '--',    # en-dash
+            '\u2018': '`',     # left single quote
+            '\u2019': "'",     # right single quote
+            '\u201c': '``',    # left double quote
+            '\u201d': "''",    # right double quote
+            '\u2026': '\\ldots{}',  # ellipsis
+            '\u00d7': '$\\times$',  # multiplication sign
+            '\u2264': '$\\leq$',    # less than or equal
+            '\u2265': '$\\geq$',    # greater than or equal
+            '\u00b1': '$\\pm$',     # plus-minus
+        }
+        for uchar, replacement in unicode_map.items():
+            if uchar in text:
+                count = text.count(uchar)
+                text = text.replace(uchar, replacement)
+                fixes.append(f"Replaced {count} Unicode '{uchar}' with '{replacement}'")
+
+        # 4. Fix unmatched \begin/\end environments
+        env_stack: list[str] = []
+        for m in re.finditer(r'\\(begin|end)\{(\w+)\}', text):
+            cmd, env = m.group(1), m.group(2)
+            if cmd == "begin":
+                env_stack.append(env)
+            elif cmd == "end" and env_stack and env_stack[-1] == env:
+                env_stack.pop()
+        # If there are unclosed environments, append \end{X} before \end{document}
+        if env_stack:
+            closing = "\n".join(f"\\end{{{e}}}" for e in reversed(env_stack))
+            fixes.append(f"Added missing \\end for: {env_stack}")
+            text = text.replace("\\end{document}", f"{closing}\n\\end{{document}}")
+
+        # 5. Remove commented-out figure environments that still have \includegraphics
+        # (from fix #1, clean up orphaned \caption, \label within the commented block)
+        def _clean_commented_figure(m):
+            block = m.group(0)
+            if "% MISSING:" in block:
+                # Comment out the entire figure environment
+                commented = "\n".join(f"% {line}" for line in block.split("\n"))
+                fixes.append("Commented out entire figure environment with missing file")
+                return commented
+            return block
+
+        text = re.sub(
+            r'\\begin\{figure\}.*?\\end\{figure\}',
+            _clean_commented_figure,
+            text,
+            flags=re.DOTALL,
+        )
+
+        return text, fixes
+
     async def _compile_pdf(
         self,
         tex_path,
         max_fix_attempts: int = MAX_LATEX_FIX_ATTEMPTS,
         template_format: str = "arxiv",
     ) -> dict:
-        """Compile LaTeX to PDF with automatic error-fix loop.
+        """Compile LaTeX to PDF with deterministic pre-fixes + LLM patch loop.
 
-        If compilation fails, feed the error back to the LLM, apply the fix,
-        and retry up to *max_fix_attempts* times.
+        Flow:
+        1. Apply deterministic regex fixes (zero LLM cost)
+        2. Compile
+        3. If fails → LLM patch-mode fix → retry
         """
         self._copy_figures_to_drafts()
         self._copy_style_files(template_format)
@@ -1085,14 +1254,30 @@ Output ONLY the LaTeX paragraphs for this section. Do not include \\section comm
             return {"error": f"PDF compiler module not available: {exc}"}
 
         tex_path = Path(tex_path)
+        tex_dir = tex_path.parent
 
+        # Step 1: Apply deterministic fixes before first compilation
+        try:
+            current_tex = tex_path.read_text(encoding="utf-8")
+            fixed_tex, det_fixes = self._deterministic_latex_fixes(current_tex, tex_dir)
+            if det_fixes:
+                self.log(f"Applied {len(det_fixes)} deterministic LaTeX fix(es):")
+                for f in det_fixes:
+                    self.log(f"  - {f}")
+                fixed_tex = self._sanitize_latex(fixed_tex)
+                tex_path.write_text(fixed_tex, encoding="utf-8")
+        except OSError as exc:
+            logger.error("Cannot read/write tex file for pre-fixing: %s", exc)
+
+        # Step 2: Compile + LLM fix loop
         result: dict = {}
+        llm_attempts = 0
         for attempt in range(max_fix_attempts + 1):
             result = await compile_pdf(str(tex_path))
 
             if "pdf_path" in result:
                 if attempt > 0:
-                    self.log(f"PDF compiled successfully after {attempt} fix(es)")
+                    self.log(f"PDF compiled successfully after {attempt} fix(es) ({llm_attempts} LLM)")
                 return result
 
             error_msg = result.get("error", "Unknown compilation error")
@@ -1106,22 +1291,29 @@ Output ONLY the LaTeX paragraphs for this section. Do not include \\section comm
                 self.log(f"PDF compilation failed after {max_fix_attempts} fix attempts")
                 return result
 
-            # Ask LLM to fix the LaTeX
-            self.log(f"PDF compilation failed (attempt {attempt + 1}), asking LLM to fix...")
-            self.save_log(
-                f"latex_compile_error_{attempt}.log", error_msg
-            )
+            self.log(f"PDF compilation failed (attempt {attempt + 1}), diagnosing...")
+            self.save_log(f"latex_compile_error_{attempt}.log", error_msg)
 
+            # Try deterministic fixes again based on the error message
             try:
                 current_tex = tex_path.read_text(encoding="utf-8")
             except OSError as exc:
                 logger.error("Cannot read tex file for fixing: %s", exc)
                 return result
 
+            fixed_tex, det_fixes = self._deterministic_latex_fixes(current_tex, tex_dir)
+            if det_fixes:
+                self.log(f"  Applied {len(det_fixes)} deterministic fix(es), retrying...")
+                fixed_tex = self._sanitize_latex(fixed_tex)
+                tex_path.write_text(fixed_tex, encoding="utf-8")
+                continue  # retry without counting as LLM attempt
+
+            # Ask LLM to fix via patch mode
+            llm_attempts += 1
+            self.log(f"  Asking LLM for patch fix (LLM attempt {llm_attempts})...")
             fixed_tex = await self._fix_latex_errors(current_tex, error_msg)
 
             if fixed_tex and fixed_tex != current_tex:
-                # Sanitize again after the LLM fix
                 fixed_tex = self._sanitize_latex(fixed_tex)
                 try:
                     tex_path.write_text(fixed_tex, encoding="utf-8")
@@ -1136,139 +1328,107 @@ Output ONLY the LaTeX paragraphs for this section. Do not include \\section comm
         return result  # pragma: no cover
 
     async def _fix_latex_errors(self, tex_source: str, error_log: str) -> str | None:
-        """Ask the LLM to fix LaTeX compilation errors with root-cause analysis."""
-        # Truncate very long error logs to fit in context
+        """Ask the LLM to fix LaTeX compilation errors using patch mode.
+
+        Instead of asking the LLM to return the entire document (which causes
+        504 timeouts on long documents), we ask for JSON patches [{old, new}].
+        """
         if len(error_log) > 3000:
             error_log = error_log[:1500] + "\n...[truncated]...\n" + error_log[-1500:]
 
-        # Root-cause analysis: classify the error type for targeted fix
-        error_lower = error_log.lower()
-        targeted_guidance = ""
-        if "missing \\begin{document}" in error_lower or "missing begin{document}" in error_lower:
-            targeted_guidance = (
-                "\nDIAGNOSIS: The LaTeX file is missing or has a corrupted preamble. "
-                "This usually means non-LaTeX content (e.g., HTML comments, XML tags, "
-                "meta-commentary text) appears BEFORE \\begin{document}. "
-                "FIX: Ensure the file starts with \\documentclass and that NOTHING except "
-                "valid LaTeX preamble commands appears before \\begin{document}.\n"
-            )
-        elif "undefined control sequence" in error_lower:
-            targeted_guidance = (
-                "\nDIAGNOSIS: An undefined LaTeX command is used. "
-                "FIX: Check for typos in command names, ensure required packages are loaded, "
-                "or replace with standard alternatives.\n"
-            )
-        elif "mismatched" in error_lower or "begin" in error_lower and "end" in error_lower:
-            targeted_guidance = (
-                "\nDIAGNOSIS: Mismatched \\begin/\\end environments. "
-                "FIX: Ensure every \\begin{X} has a matching \\end{X}. Check for nested "
-                "environments that are not properly closed.\n"
-            )
-        elif "unicode" in error_lower or "utf" in error_lower or "character" in error_lower:
-            targeted_guidance = (
-                "\nDIAGNOSIS: Unicode characters that LaTeX cannot handle. "
-                "FIX: Replace em-dash (—) with ---, en-dash (–) with --, "
-                "smart quotes with standard quotes, Greek letters with \\alpha etc.\n"
-            )
-
-        system = (
-            "You are a LaTeX expert. Fix the compilation errors in the given LaTeX source.\n"
-            "Return the COMPLETE fixed LaTeX document. Do NOT omit any sections.\n"
-            "Do NOT wrap in markdown fences. Output ONLY the LaTeX source.\n"
-            "The output must start with \\documentclass and end with \\end{document}.\n"
-            "Do NOT include any HTML comments, XML tags, or non-LaTeX content.\n\n"
-            "Common fixes:\n"
-            "- Replace Unicode characters (em-dash, en-dash, smart quotes, Greek letters) "
-            "with LaTeX commands\n"
-            "- Fix unescaped special characters: % # & _ $ { }\n"
-            "- Fix mismatched \\begin/\\end environments\n"
-            "- Fix malformed table/tabular environments\n"
-            "- Remove or replace unsupported packages\n"
-            "- Fix \\includegraphics paths\n"
-            "- Fix malformed \\cite, \\ref, \\label commands\n\n"
-            "Overfull hbox fixes:\n"
-            "- Tables: add \\small, \\setlength{\\tabcolsep}{4pt}, @{} in column spec, "
-            "or wrap in \\resizebox{\\textwidth}{!}{...}\n"
-            "- Long inline math: break into \\begin{align} or \\begin{multline}\n"
-            "- Long text: rewrite the sentence shorter or add \\linebreak"
-        )
-
-        # Smart truncation: extract error line and send a focused window
+        # Extract error line number for focused context
         error_line = None
         line_match = re.search(r'(?:line\s+|l\.)(\d+)', error_log)
         if line_match:
             error_line = int(line_match.group(1))
 
+        # Build focused context around error
         tex_lines = tex_source.split('\n')
-        if error_line and len(tex_source) > 30000:
-            # Convert to 0-indexed
+        if error_line:
             err_idx = max(0, error_line - 1)
-            preamble_end = min(50, len(tex_lines))
-            window_start = max(0, err_idx - 30)
-            window_end = min(len(tex_lines), err_idx + 30)
-            # Ensure window_start <= window_end
-            if window_start < preamble_end and window_end > preamble_end:
-                window_start = preamble_end  # avoid overlapping preamble
-            elif window_end <= preamble_end:
-                # Error is in the preamble — just extend preamble to cover it
-                preamble_end = window_end
-                window_start = window_end  # no separate window needed
-            tail_start = max(window_end, len(tex_lines) - 30)
-
-            focused_lines = tex_lines[:preamble_end]
-            if window_start > preamble_end:
-                focused_lines.append(f"% ... [lines {preamble_end+1}-{window_start} omitted] ...")
-            focused_lines.extend(tex_lines[window_start:window_end])
-            if tail_start > window_end:
-                focused_lines.append(f"% ... [lines {window_end+1}-{tail_start} omitted] ...")
-            focused_lines.extend(tex_lines[tail_start:])
-            tex_for_prompt = '\n'.join(focused_lines)
-
-            prompt = (
-                f"The following LaTeX document failed to compile at line {error_line}.\n\n"
-                f"=== COMPILATION ERROR ===\n{error_log}\n=== END ERROR ===\n"
-                f"{targeted_guidance}\n"
-                f"I'm showing the preamble + a window around the error line + the end.\n"
-                f"=== LATEX SOURCE (focused) ===\n{tex_for_prompt}\n=== END SOURCE ===\n\n"
-                f"Fix the error and return the COMPLETE fixed LaTeX document.\n"
-                f"The document MUST start with \\documentclass and end with \\end{{document}}.\n"
-                f"For omitted sections, reproduce them exactly as they were."
-            )
+            start = max(0, err_idx - 20)
+            end = min(len(tex_lines), err_idx + 20)
+            context_lines = []
+            for i in range(start, end):
+                marker = " >>> " if i == err_idx else "     "
+                context_lines.append(f"{marker}{i+1}: {tex_lines[i]}")
+            context_text = "\n".join(context_lines)
         else:
-            if len(tex_source) > 50000:
-                tex_source = tex_source[:25000] + "\n...[truncated]...\n" + tex_source[-25000:]
-            prompt = (
-                f"The following LaTeX document failed to compile.\n\n"
-                f"=== COMPILATION ERROR ===\n{error_log}\n=== END ERROR ===\n"
-                f"{targeted_guidance}\n"
-                f"=== LATEX SOURCE ===\n{tex_source}\n=== END SOURCE ===\n\n"
-                f"Fix ALL errors and return the complete corrected LaTeX document.\n"
-                f"The document MUST start with \\documentclass and end with \\end{{document}}."
-            )
+            # No line number — send first 100 + last 50 lines
+            if len(tex_lines) > 200:
+                context_text = "\n".join(
+                    f"     {i+1}: {l}" for i, l in enumerate(tex_lines[:100])
+                ) + "\n     ... [truncated] ...\n" + "\n".join(
+                    f"     {i+1}: {l}" for i, l in enumerate(tex_lines[-50:], len(tex_lines)-50)
+                )
+            else:
+                context_text = "\n".join(
+                    f"     {i+1}: {l}" for i, l in enumerate(tex_lines)
+                )
+
+        system = (
+            "You are a LaTeX expert fixing compilation errors.\n"
+            "Return a JSON object with patches to fix the errors.\n"
+            "Each patch specifies exact text to find and replace.\n\n"
+            "Common fixes:\n"
+            "- Replace Unicode characters with LaTeX equivalents\n"
+            "- Fix unescaped special characters: % # & _ $ { }\n"
+            "- Fix mismatched \\begin/\\end environments\n"
+            "- Fix malformed table/tabular environments\n"
+            "- Comment out or remove \\includegraphics for missing files\n"
+            "- Fix undefined control sequences\n\n"
+            "Return ONLY valid JSON, no markdown fences."
+        )
+
+        prompt = (
+            f"=== COMPILATION ERROR ===\n{error_log}\n=== END ERROR ===\n\n"
+            f"=== LATEX SOURCE (around error) ===\n{context_text}\n=== END SOURCE ===\n\n"
+            f"Return JSON:\n"
+            f'{{\n'
+            f'  "diagnosis": "brief explanation of root cause",\n'
+            f'  "patches": [\n'
+            f'    {{\n'
+            f'      "old": "exact text to find (copy from source above)",\n'
+            f'      "new": "replacement text",\n'
+            f'      "description": "what this fixes"\n'
+            f'    }}\n'
+            f'  ]\n'
+            f'}}'
+        )
 
         try:
-            fixed = await self.generate(system, prompt)
-            # Strip markdown fences if present
-            fixed = fixed.strip()
-            if fixed.startswith("```"):
-                lines = fixed.split("\n")
-                lines = lines[1:]
-                if lines and lines[-1].strip().startswith("```"):
-                    lines = lines[:-1]
-                fixed = "\n".join(lines)
-            # Strip any leading non-LaTeX content (meta-commentary, HTML, etc.)
-            if "\\documentclass" in fixed:
-                idx = fixed.index("\\documentclass")
-                if idx > 0:
-                    discarded = fixed[:idx].strip()
-                    if discarded:
-                        self.log(f"  Stripping {len(discarded)} chars of non-LaTeX preamble")
-                    fixed = fixed[idx:]
-            # Sanity check: must contain \documentclass
-            if "\\documentclass" not in fixed:
-                self.log("  LLM fix missing \\documentclass, discarding")
+            result = await self.generate_json(system, prompt)
+            patches = result.get("patches", [])
+            diagnosis = result.get("diagnosis", "")
+
+            if diagnosis:
+                self.log(f"  LLM diagnosis: {diagnosis}")
+
+            if not patches:
+                self.log("  LLM returned no patches")
                 return None
+
+            fixed = tex_source
+            applied = 0
+            for patch in patches:
+                if not isinstance(patch, dict):
+                    continue
+                old = patch.get("old", "")
+                new = patch.get("new", "")
+                desc = patch.get("description", "")
+                if old and new and old in fixed:
+                    fixed = fixed.replace(old, new, 1)
+                    applied += 1
+                    self.log(f"  Patch applied: {desc}")
+                elif old and old not in fixed:
+                    self.log(f"  Patch skipped (text not found): {desc}")
+
+            if applied == 0:
+                self.log("  No patches could be applied")
+                return None
+
             return fixed
+
         except Exception as e:
             self.log(f"  LLM fix call failed: {e}")
             return None
@@ -1383,13 +1543,17 @@ Output ONLY the LaTeX paragraphs for this section. Do not include \\section comm
             # Add @{} to tabular column spec if missing (opening and closing)
             def _add_at_braces(m):
                 spec = m.group(1)  # column spec e.g. "lccr" or "@{}lccr@{}"
+                # If @{} is already present anywhere, don't touch it
+                if "@{}" in spec:
+                    return f"\\begin{{tabular}}{{{spec}}}"
                 if not spec.startswith("@{}"):
                     spec = "@{}" + spec
                 if not spec.endswith("@{}"):
                     spec = spec + "@{}"
                 return f"\\begin{{tabular}}{{{spec}}}"
+            # Use a greedy match for the column spec to handle nested @{}
             block = re.sub(
-                r'\\begin\{tabular\}\{([^}]+)\}',
+                r'\\begin\{tabular\}\{(.+)\}',
                 _add_at_braces,
                 block,
             )

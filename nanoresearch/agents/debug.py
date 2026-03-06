@@ -207,6 +207,12 @@ Rules:
 - If the error is a missing DATA file (FileNotFoundError on .csv, .obo, .gaf, .fasta, etc.),
   do NOT write download code (wget, requests, urllib). Instead, REMOVE or SIMPLIFY the code
   that requires the missing file. Comment it out or use a simpler alternative approach.
+- COMMON ML PITFALLS you must know how to fix:
+  * "size mismatch for classifier" / "Error(s) in loading state_dict" when using from_pretrained
+    with different num_labels → add `ignore_mismatched_sizes=True` to from_pretrained() call
+  * Data archives (.tar.gz, .zip) not decompressed → add decompression logic before loading
+  * `import X; X.func()` where func doesn't exist in X → add the missing factory function to X
+  * Script catches exceptions but exits with code 0 → add `sys.exit(1)` in except blocks
 - IMPORTANT: The "old" field must be an EXACT substring of the file content (verbatim, preserving whitespace)
 - IMPORTANT: The "new" field must have correct Python indentation
 - When adding new functions/classes to a file, include them as a separate patch with "old" being the last few lines of the file

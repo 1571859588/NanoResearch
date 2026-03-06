@@ -83,6 +83,31 @@ class DeepPipelineOrchestrator:
         # Mark pipeline done
         self.workspace.update_manifest(current_stage=PipelineStage.DONE)
         logger.info("Deep pipeline completed!")
+
+        # Export clean output folder
+        try:
+            export_path = self.workspace.export()
+            logger.info(f"Exported project to: {export_path}")
+            results["export_path"] = str(export_path)
+
+            # Also copy experiment code and results into export
+            exp_dir = self.workspace.path / "experiment"
+            if exp_dir.exists():
+                import shutil
+                code_dest = export_path / "code"
+                code_dest.mkdir(exist_ok=True)
+                for f in list(exp_dir.glob("*.py")) + list(exp_dir.glob("*.txt")) + list(exp_dir.glob("*.slurm")):
+                    shutil.copy2(f, code_dest / f.name)
+                results_src = exp_dir / "results"
+                if results_src.exists():
+                    results_dest = export_path / "results"
+                    results_dest.mkdir(exist_ok=True)
+                    for f in results_src.iterdir():
+                        if f.is_file() and f.suffix in (".json", ".csv", ".log"):
+                            shutil.copy2(f, results_dest / f.name)
+        except Exception as exc:
+            logger.warning(f"Export failed (non-fatal): {exc}")
+
         return results
 
     async def _run_stage_with_retry(

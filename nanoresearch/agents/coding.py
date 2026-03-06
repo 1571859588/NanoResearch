@@ -165,6 +165,9 @@ CRITICAL CONSTRAINT: Your code must ONLY load data from paths listed as AVAILABL
 - Do NOT write any download logic (wget, requests.get, urllib) for datasets.
 - Every data loading operation must use a path from the AVAILABLE list.
 - Use ABSOLUTE paths (starting with /) as argparse defaults, never relative paths like ./data/.
+- CROSS-FILE CONSISTENCY: If train.py calls `model.create_model()`, then model.py MUST define `def create_model()`.
+  Every module.function() call must correspond to an actual function defined in that module.
+  Every `from X import Y` must import a name that exists in X.
 
 Design a runnable project. Return JSON:
 {{
@@ -236,7 +239,9 @@ Design a runnable project. Return JSON:
             "Write COMPLETE, RUNNABLE Python code. No stubs, no TODOs, no placeholders. "
             "The code must actually work when executed. "
             "Use standard PyTorch patterns. Include proper error handling, "
-            "logging, and metric tracking. Save results to JSON/CSV files."
+            "logging, and metric tracking. Save results to JSON/CSV files. "
+            "On ANY unhandled error in the main training script, call sys.exit(1) — "
+            "never let exceptions be silently caught with exit code 0."
         )
 
         all_files = [f.get("path", "") for f in code_plan.get("files", [])]
@@ -266,12 +271,19 @@ IMPORTANT:
 - Handle both training and evaluation in the same script or via flags.
 - CRITICAL: All class/function names used in imports between files MUST be consistent.
   For example, if train.py does `from dataset import MyDataset`, then dataset.py MUST define `class MyDataset`.
-  Double-check every cross-file import before writing the code.
+  If train.py does `import model; model.create_model(...)`, then model.py MUST define `def create_model(...)`.
+  Double-check every cross-file import AND every module.function() call before writing the code.
 - DO NOT write download logic for data/models — they are already downloaded at the paths above.
 - Use the EXACT file paths listed above as argparse defaults.
 - ONLY use file paths from the AVAILABLE list above. If a path is not listed, it does NOT exist.
 - Do NOT use relative paths like ./data/ or ./models/. Use the exact absolute paths provided.
 - If the blueprint mentions a dataset that was NOT downloaded (listed as NOT AVAILABLE), do NOT use it. Adapt your code to work without it.
+- COMMON ML PITFALLS — you MUST handle these:
+  * When loading pretrained models with a different number of classes, use `ignore_mismatched_sizes=True` in from_pretrained().
+  * If data files are archives (.tar.gz, .zip, .tar), decompress them before use. Add decompression logic in dataset loading.
+  * The main training script must exit with non-zero code on failure. Use `sys.exit(1)` in except blocks, never silently swallow errors.
+  * When using from_pretrained with num_labels different from the pretrained model, ALWAYS pass ignore_mismatched_sizes=True.
+  * If loading HuggingFace models with custom num_labels/num_classes, handle weight mismatch gracefully.
 
 Return ONLY the Python code, no markdown fences."""
 
@@ -474,12 +486,21 @@ exit $EXIT_CODE
         return issues
 
     async def _fix_import_mismatches(self, code_dir: Path, code_plan: dict) -> None:
-        """Scan all generated files for cross-file import mismatches and fix them via LLM."""
+        """Scan all generated files for cross-file import mismatches and fix them via LLM.
+
+        Checks two patterns:
+        1. `from X import Y` where Y doesn't exist in X
+        2. `import X` + `X.func()` where func doesn't exist in X
+        """
         import re as _re
 
         # Collect all defined classes/functions and all imports
         definitions: dict[str, list[str]] = {}  # filename -> [class/func names]
         imports: list[dict] = []  # [{importer, module, names}]
+        # Track module-level attribute access: import X; X.func()
+        module_accesses: list[dict] = []  # [{importer, module, attr, line}]
+
+        local_modules = {f.stem for f in code_dir.glob("*.py")}
 
         for py_file in code_dir.glob("*.py"):
             content = py_file.read_text(errors="replace")
@@ -506,7 +527,32 @@ exit $EXIT_CODE
                     "names": imported_names,
                 })
 
-        # Check for mismatches
+            # Find `import X` for local modules, then scan for X.attr() calls
+            imported_modules: dict[str, str] = {}  # alias -> real module name
+            for m in _re.finditer(
+                r"^import\s+(\w+)(?:\s+as\s+(\w+))?$", content, _re.MULTILINE
+            ):
+                real_name = m.group(1)
+                alias = m.group(2) or real_name
+                if real_name in local_modules:
+                    imported_modules[alias] = real_name
+
+            # Scan for alias.attribute( calls
+            for alias, real_name in imported_modules.items():
+                for m in _re.finditer(
+                    rf"\b{_re.escape(alias)}\.(\w+)\s*\(", content
+                ):
+                    attr = m.group(1)
+                    # Find line number for better diagnostics
+                    line_no = content[:m.start()].count("\n") + 1
+                    module_accesses.append({
+                        "importer": py_file.name,
+                        "module": real_name,
+                        "attr": attr,
+                        "line": line_no,
+                    })
+
+        # Check for mismatches — Pattern 1: from X import Y
         mismatches = []
         for imp in imports:
             module = imp["module"]
@@ -521,6 +567,31 @@ exit $EXIT_CODE
                         "missing_name": name,
                         "available": sorted(defined),
                     })
+
+        # Check for mismatches — Pattern 2: X.func() where func not in X
+        seen_access = set()
+        for acc in module_accesses:
+            module = acc["module"]
+            if module not in definitions:
+                continue
+            attr = acc["attr"]
+            # Skip Python builtins that might be dynamically added
+            if attr.startswith("_"):
+                continue
+            defined = set(definitions[module])
+            key = (acc["importer"], module, attr)
+            if key in seen_access:
+                continue
+            seen_access.add(key)
+            if attr not in defined:
+                mismatches.append({
+                    "importer": acc["importer"],
+                    "module": module,
+                    "missing_name": attr,
+                    "available": sorted(defined),
+                    "usage_pattern": f"import {module}; {module}.{attr}()",
+                    "line": acc["line"],
+                })
 
         if not mismatches:
             self.log("Import consistency check passed")
@@ -538,10 +609,16 @@ exit $EXIT_CODE
             source_listing += f"\n# FILE: {fname}\n{content}\n"
 
         system_prompt = (
-            "You are fixing import mismatches between Python files in a project. "
-            "Some files import names that don't exist in the target module. "
-            "Fix this by either renaming the import or adding the missing class/function. "
-            "Prefer renaming the import to match what's defined. "
+            "You are fixing cross-file interface mismatches between Python files in a project. "
+            "Some files reference names that don't exist in the target module, either via:\n"
+            "1. `from X import missing_name` — name not defined in X\n"
+            "2. `import X; X.missing_name()` — function/class not defined in X\n\n"
+            "Fix this by EITHER:\n"
+            "- Adding the missing function/class to the target module (preferred if the caller expects specific behavior)\n"
+            "- Renaming the call to match what's already defined\n\n"
+            "For factory functions like create_model(), build_model() etc. that don't exist, "
+            "ADD them to the target module. The factory function should instantiate and return "
+            "the appropriate model/class using the existing definitions in that module.\n"
             "Return JSON with patches."
         )
 
