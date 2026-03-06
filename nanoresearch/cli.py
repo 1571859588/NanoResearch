@@ -513,3 +513,27 @@ def inspect(
             exists = (ws.path / path).is_file()
             icon = "[green]exists[/green]" if exists else "[dim]missing[/dim]"
             console.print(f"  {name:12s} {icon}  ({path})")
+
+
+@app.command()
+def feishu(
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """启动飞书机器人，通过飞书消息触发 NanoResearch pipeline。
+
+    需要先在飞书开放平台创建应用并配置 App ID/Secret。
+    凭证通过环境变量 FEISHU_APP_ID/FEISHU_APP_SECRET 或
+    ~/.nanobot/config.json 中的 feishu.app_id/app_secret 配置。
+    """
+    _setup_logging(verbose)
+    from nanoresearch.feishu_bot import main as feishu_main
+    console.print(Panel(
+        "[bold]NanoResearch 飞书机器人[/bold]\n\n"
+        "在飞书中给机器人发消息即可启动 pipeline。\n"
+        "支持的命令：/run <主题>、/status、/list、/stop、/help\n"
+        "或直接发送研究主题。\n\n"
+        "按 Ctrl+C 停止。",
+        title="Feishu Bot",
+        border_style="blue",
+    ))
+    feishu_main()
