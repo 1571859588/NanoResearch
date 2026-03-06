@@ -126,6 +126,10 @@ PAPER_SECTIONS = [
      "Do NOT round, adjust, or modify them.\n"
      "If results are marked SYNTHETIC or come from figure data, use those numbers in the tables.\n"
      "NEVER leave the proposed method rows as '--'. Always fill tables with concrete numbers.\n"
+     "For baseline rows: use the numbers from BASELINE EXPECTED PERFORMANCE section above.\n"
+     "For ablation rows: use the numbers from Ablation Results section above.\n"
+     "If a specific baseline number is genuinely unavailable, use '-' (single dash) ONLY for\n"
+     "that cell, but ALWAYS fill the proposed method row completely.\n"
      "If no results are available because the experiment FAILED or did not run,\n"
      "you MUST clearly state this in the text. Write: 'Due to [reason], we were unable to\n"
      "obtain experimental results. We present our methodology and leave empirical validation\n"
@@ -442,6 +446,10 @@ Metrics: {json.dumps([m.get('name', '') for m in metrics], ensure_ascii=False)}
 Baselines: {json.dumps([b.get('name', '') for b in baselines], ensure_ascii=False)}
 Ablation Groups: {json.dumps([a.get('group_name', '') for a in ablations], ensure_ascii=False)}
 
+=== BASELINE EXPECTED PERFORMANCE (from literature) ===
+{self._format_baseline_performance(baselines, metrics)}
+=== END BASELINE PERFORMANCE ===
+
 {evidence_lines}
 
 {real_results_lines}
@@ -456,6 +464,34 @@ Each contribution in Introduction MUST map to experimental evidence:
 - Ablation groups: {json.dumps([a.get('group_name', '') for a in ablations], ensure_ascii=False)}
 Every component listed above should appear in the ablation table.
 === END ALIGNMENT ==={full_text_block}"""
+
+    @staticmethod
+    def _format_baseline_performance(baselines: list, metrics: list) -> str:
+        """Format baseline expected performance from blueprint for context."""
+        if not baselines:
+            return "No baselines defined."
+        metric_names = [m.get("name", "?") for m in metrics] if metrics else []
+        lines = []
+        has_any_value = False
+        for b in baselines:
+            name = b.get("name", "Unknown")
+            perf = b.get("expected_performance", {})
+            if not isinstance(perf, dict):
+                perf = {}
+            # Filter out N/A and null values
+            valid_perf = {k: v for k, v in perf.items()
+                         if v is not None and str(v).strip().upper() != "N/A"}
+            if valid_perf:
+                has_any_value = True
+                perf_str = ", ".join(f"{k}={v}" for k, v in valid_perf.items())
+                lines.append(f"  {name}: {perf_str}")
+            else:
+                lines.append(f"  {name}: (no published numbers available)")
+        if not has_any_value:
+            lines.append("NOTE: No published baseline numbers were found in the literature review.")
+            lines.append("Use well-known results from original papers if you know them.")
+            lines.append("Otherwise, state that baseline comparison requires further investigation.")
+        return "\n".join(lines)
 
     @staticmethod
     def _build_evidence_context(ideation: dict, blueprint: dict) -> str:
@@ -566,8 +602,18 @@ Every component listed above should appear in the ablation table.
                 lines.append("")
                 lines.append("--- Comparison with Baselines ---")
                 if isinstance(comparison, dict):
-                    for k, v in comparison.items():
-                        lines.append(f"  {k}: {v}")
+                    for method_name, method_metrics in comparison.items():
+                        if isinstance(method_metrics, dict):
+                            metrics_str = ", ".join(
+                                f"{k}={v}" for k, v in method_metrics.items()
+                                if v is not None
+                            )
+                            lines.append(f"  {method_name}: {metrics_str}")
+                        else:
+                            lines.append(f"  {method_name}: {method_metrics}")
+                elif isinstance(comparison, str):
+                    # Text description — include as-is
+                    lines.append(f"  {comparison}")
                 elif isinstance(comparison, list):
                     for entry in comparison:
                         lines.append(f"  {entry}")
@@ -636,96 +682,108 @@ Every component listed above should appear in the ablation table.
 
     # ---- figure/table blocks ------------------------------------------------
 
+    # Semantic keyword → canonical figure alias mapping
+    _FIGURE_ALIAS_KEYWORDS: dict[str, list[str]] = {
+        "architecture": ["architecture", "model", "framework", "pipeline", "overview", "diagram"],
+        "results": ["results", "comparison", "performance", "accuracy", "main"],
+        "ablation": ["ablation"],
+        "training": ["training", "loss", "convergence", "curve"],
+    }
+
+    def _classify_figure(self, fig_key: str, caption: str) -> str | None:
+        """Classify a figure into a canonical alias based on key and caption."""
+        text = f"{fig_key} {caption}".lower()
+        for alias, keywords in self._FIGURE_ALIAS_KEYWORDS.items():
+            for kw in keywords:
+                if kw in text:
+                    return alias
+        return None
+
     def _build_figure_blocks(self, blueprint: dict, figure_output: dict | None = None) -> dict[str, str]:
         """Pre-build LaTeX figure/table blocks to embed inline.
 
         Dynamically builds blocks from whatever figures the FigureAgent produced.
-        Falls back to hardcoded names when figure_output is not available.
+        Uses semantic classification to map descriptive figure keys to canonical
+        aliases (architecture, results, ablation, training).
+        Falls back to scanning drafts directory when figure_output is not available.
         """
         blocks: dict[str, str] = {}
         figures = (figure_output or {}).get("figures", {})
 
+        def _make_block(fig_key: str, caption: str, fig_data: dict | None = None,
+                        include_name: str = "") -> str:
+            """Build a LaTeX figure block."""
+            if not include_name:
+                if fig_data and fig_data.get("pdf_path"):
+                    include_name = f"{fig_key}.pdf"
+                else:
+                    include_name = f"{fig_key}.png"
+            # Derive label from fig_key
+            parts = fig_key.split("_", 1)
+            label_suffix = parts[1] if len(parts) > 1 else fig_key
+            return (
+                "\\begin{figure}[H]\n"
+                "\\centering\n"
+                f"\\includegraphics[width=0.9\\textwidth]{{{include_name}}}\n"
+                f"\\caption{{{caption}}}\n"
+                f"\\label{{fig:{label_suffix}}}\n"
+                "\\end{figure}"
+            ), label_suffix
+
+        # Collect all figure entries: (fig_key, caption, block, label_suffix)
+        entries: list[tuple[str, str, str, str]] = []
+
         if figures:
-            # Dynamic: iterate over all figures produced by the FigureAgent
             for fig_key, fig_data in figures.items():
                 if "error" in fig_data and "png_path" not in fig_data:
-                    continue  # skip failed figures with no output
-
+                    continue
                 caption = fig_data.get("caption", f"Figure: {fig_key}")
-                # Derive a LaTeX-friendly label from fig_key
-                # e.g., "fig1_architecture" -> "fig:architecture"
-                #        "fig2_results"     -> "fig:results"
-                #        "fig1_model_architecture" -> "fig:model_architecture"
-                parts = fig_key.split("_", 1)
-                label_suffix = parts[1] if len(parts) > 1 else fig_key
-                label = f"fig:{label_suffix}"
-
-                # Check for PDF first, then PNG
-                pdf_name = f"{fig_key}.pdf"
-                png_name = f"{fig_key}.png"
-                include_name = pdf_name if fig_data.get("pdf_path") else png_name
-
-                block = (
-                    "\\begin{figure}[H]\n"
-                    "\\centering\n"
-                    f"\\includegraphics[width=\\textwidth]{{{include_name}}}\n"
-                    f"\\caption{{{caption}}}\n"
-                    f"\\label{{{label}}}\n"
-                    "\\end{figure}"
-                )
-
-                # Store under label_suffix for exact matching
-                blocks[label_suffix] = block
-                # Also store under canonical aliases for exact section matching
-                # Only match if alias equals suffix or suffix ends with the alias
-                # (e.g., "model_architecture" -> "architecture", NOT "model")
-                for alias in ("architecture", "results", "ablation"):
-                    if alias not in blocks and (
-                        label_suffix == alias or label_suffix.endswith(f"_{alias}")
-                    ):
-                        blocks[alias] = block
+                block, label_suffix = _make_block(fig_key, caption, fig_data)
+                entries.append((fig_key, caption, block, label_suffix))
         else:
-            # Fallback: scan the drafts directory for any generated figure files
-            # instead of assuming hardcoded fig1_, fig2_, fig3_ names
+            # Scan drafts directory for generated figure files
             drafts_dir = self.workspace.path / "drafts" if hasattr(self, "workspace") else None
             fig_files = []
             if drafts_dir and drafts_dir.exists():
                 fig_files = sorted(drafts_dir.glob("fig_*.pdf")) + sorted(drafts_dir.glob("fig_*.png"))
 
-            if fig_files:
-                # Use actual generated files
-                seen_stems = set()
-                for fig_path in fig_files:
-                    stem = fig_path.stem  # e.g., "fig_training_curve"
-                    if stem in seen_stems:
-                        continue
-                    seen_stems.add(stem)
-                    # Derive label from stem: fig_training_curve -> training_curve
-                    label_suffix = stem.replace("fig_", "", 1) if stem.startswith("fig_") else stem
-                    caption = label_suffix.replace("_", " ").title()
-                    include_name = fig_path.name
-                    block = (
-                        "\\begin{figure}[H]\n"
-                        "\\centering\n"
-                        f"\\includegraphics[width=0.9\\textwidth]{{{include_name}}}\n"
-                        f"\\caption{{{caption}.}}\n"
-                        f"\\label{{fig:{label_suffix}}}\n"
-                        "\\end{figure}"
-                    )
-                    blocks[label_suffix] = block
-                    # Map common aliases
-                    for alias in ("architecture", "results", "ablation"):
-                        if alias not in blocks and (
-                            label_suffix == alias or label_suffix.endswith(f"_{alias}")
-                        ):
-                            blocks[alias] = block
-            else:
-                # No figures at all — provide empty blocks so tex compiles
-                self.log("WARNING: No figures available for paper")
-                for alias in ("architecture", "results", "ablation"):
-                    blocks[alias] = (
-                        f"% Figure '{alias}' not available\n"
-                    )
+            seen_stems = set()
+            for fig_path in fig_files:
+                stem = fig_path.stem
+                if stem in seen_stems:
+                    continue
+                seen_stems.add(stem)
+                label_suffix = stem.replace("fig_", "", 1) if stem.startswith("fig_") else stem
+                caption = label_suffix.replace("_", " ").title()
+                block = (
+                    "\\begin{figure}[H]\n"
+                    "\\centering\n"
+                    f"\\includegraphics[width=0.9\\textwidth]{{{fig_path.name}}}\n"
+                    f"\\caption{{{caption}.}}\n"
+                    f"\\label{{fig:{label_suffix}}}\n"
+                    "\\end{figure}"
+                )
+                entries.append((stem, caption, block, label_suffix))
+
+        if not entries:
+            self.log("WARNING: No figures available for paper")
+            for alias in ("architecture", "results", "ablation"):
+                blocks[alias] = f"% Figure '{alias}' not available\n"
+            return blocks
+
+        # Step 1: Store each figure under its label_suffix
+        for fig_key, caption, block, label_suffix in entries:
+            blocks[label_suffix] = block
+
+        # Step 2: Semantic classification — map each figure to a canonical alias
+        # Avoid assigning the same alias to multiple figures
+        alias_assigned: dict[str, str] = {}  # alias -> fig_key
+        for fig_key, caption, block, label_suffix in entries:
+            alias = self._classify_figure(label_suffix, caption)
+            if alias and alias not in alias_assigned:
+                alias_assigned[alias] = fig_key
+                if alias not in blocks:
+                    blocks[alias] = block
 
         return blocks
 

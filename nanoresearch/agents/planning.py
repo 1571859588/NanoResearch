@@ -192,8 +192,11 @@ Return ONLY valid JSON."""
         if not metrics:
             return (
                 "=== PUBLISHED QUANTITATIVE EVIDENCE ===\n"
-                "No quantitative evidence was extracted from the literature.\n"
-                "Use 'N/A' for all baseline expected_performance values.\n"
+                "No quantitative evidence was extracted from the literature review.\n"
+                "For baseline expected_performance values, use well-known published results\n"
+                "from the original papers of each baseline method on the target dataset.\n"
+                "If you are confident about a baseline's published result on this dataset,\n"
+                "include it. Otherwise use null (NOT 'N/A').\n"
                 "=== END EVIDENCE ==="
             )
 

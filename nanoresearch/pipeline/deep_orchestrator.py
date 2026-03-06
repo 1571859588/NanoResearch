@@ -14,6 +14,7 @@ from nanoresearch.agents.setup import SetupAgent
 from nanoresearch.agents.coding import CodingAgent
 from nanoresearch.agents.execution import ExecutionAgent
 from nanoresearch.agents.analysis import AnalysisAgent
+from nanoresearch.agents.figure_gen import FigureAgent
 from nanoresearch.agents.writing import WritingAgent
 from nanoresearch.config import ResearchConfig
 from nanoresearch.pipeline.workspace import Workspace
@@ -35,7 +36,7 @@ DEEP_STAGES = [
 # Map string stage names to agent classes
 DEEP_STAGE_NAMES = [
     "IDEATION", "PLANNING", "SETUP", "CODING",
-    "EXECUTION", "ANALYSIS", "WRITING",
+    "EXECUTION", "ANALYSIS", "FIGURE_GEN", "WRITING",
 ]
 
 
@@ -52,6 +53,7 @@ class DeepPipelineOrchestrator:
             "CODING": CodingAgent(workspace, config),
             "EXECUTION": ExecutionAgent(workspace, config),
             "ANALYSIS": AnalysisAgent(workspace, config),
+            "FIGURE_GEN": FigureAgent(workspace, config),
             "WRITING": WritingAgent(workspace, config),
         }
 
@@ -181,10 +183,21 @@ class DeepPipelineOrchestrator:
             inputs["execution_output"] = accumulated.get("execution_output", {})
             inputs["experiment_blueprint"] = accumulated.get("experiment_blueprint", {})
 
+        elif stage_name == "FIGURE_GEN":
+            inputs["ideation_output"] = accumulated.get("ideation_output", {})
+            inputs["experiment_blueprint"] = accumulated.get("experiment_blueprint", {})
+            inputs["experiment_results"] = accumulated.get("analysis_output", {}).get("analysis", {})
+            exec_output = accumulated.get("execution_output", {})
+            inputs["experiment_status"] = exec_output.get("final_status", "pending")
+
         elif stage_name == "WRITING":
             inputs["ideation_output"] = accumulated.get("ideation_output", {})
             inputs["experiment_blueprint"] = accumulated.get("experiment_blueprint", {})
-            inputs["figure_output"] = accumulated.get("analysis_output", {}).get("figures", {})
+            # Prefer dedicated figure_gen output; fall back to analysis figures
+            fig_output = accumulated.get("figure_gen_output", {})
+            if not fig_output or not fig_output.get("figures"):
+                fig_output = accumulated.get("analysis_output", {}).get("figures", {})
+            inputs["figure_output"] = fig_output
             inputs["template_format"] = self.config.template_format
             # Inject real experiment results for writing
             exec_output = accumulated.get("execution_output", {})
@@ -206,6 +219,7 @@ class DeepPipelineOrchestrator:
             "CODING": "coding_output",
             "EXECUTION": "execution_output",
             "ANALYSIS": "analysis_output",
+            "FIGURE_GEN": "figure_gen_output",
             "WRITING": "writing_output",
         }
         key = key_map.get(stage_name, stage_name.lower())
@@ -220,6 +234,7 @@ class DeepPipelineOrchestrator:
             "CODING": "plans/coding_output.json",
             "EXECUTION": "plans/execution_output.json",
             "ANALYSIS": "plans/analysis_output.json",
+            "FIGURE_GEN": "drafts/figure_output.json",
         }
         path = file_map.get(stage_name)
         if path:

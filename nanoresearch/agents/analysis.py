@@ -79,14 +79,29 @@ Stdout Log (last part):
 {stdout_log[-3000:]}
 
 Expected Metrics: {json.dumps(blueprint.get('metrics', []), indent=2)[:500]}
-Baselines: {json.dumps(blueprint.get('baselines', []), indent=2)[:500]}
+Baselines: {json.dumps(blueprint.get('baselines', []), indent=2)[:1000]}
+Ablation Groups: {json.dumps(blueprint.get('ablation_groups', []), indent=2)[:1000]}
 
 Analyze these results. Return JSON:
 {{
   "summary": "1-2 paragraph summary of results...",
   "converged": true/false,
   "final_metrics": {{"metric_name": value, ...}},
-  "comparison_with_baselines": "How our method compares...",
+  "comparison_with_baselines": {{
+    "our_method": {{"metric1": value, "metric2": value}},
+    "baseline1_name": {{"metric1": value_or_null, "metric2": value_or_null}},
+    "baseline2_name": {{"metric1": value_or_null, "metric2": value_or_null}}
+  }},
+  "ablation_results": [
+    {{
+      "variant_name": "Full model",
+      "metrics": [{{"metric_name": "Accuracy", "value": 0.85}}]
+    }},
+    {{
+      "variant_name": "w/o Component A",
+      "metrics": [{{"metric_name": "Accuracy", "value": 0.79}}]
+    }}
+  ],
   "training_dynamics": "Description of training curve behavior...",
   "key_findings": ["finding1", "finding2", ...],
   "limitations": ["limitation1", ...],
@@ -110,7 +125,17 @@ Analyze these results. Return JSON:
       "data_source": "metrics"
     }}
   ]
-}}"""
+}}
+
+IMPORTANT:
+- For comparison_with_baselines, return a DICT mapping method names to their metrics.
+  Include our method's actual numbers. For baselines, use their expected_performance
+  from the blueprint if available, or null if unknown.
+- For ablation_results, include the full model and variants with/without each component.
+  If the experiment only ran the full model, create ablation entries by estimating
+  component contributions from the training dynamics and key findings.
+  Each variant MUST have concrete numeric values, not null.
+- NEVER use "N/A" as a numeric value. Use null for truly unknown values."""
 
         result = await self.generate_json(system_prompt, user_prompt)
         return result if isinstance(result, dict) else {}
