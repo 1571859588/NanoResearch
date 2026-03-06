@@ -1328,105 +1328,152 @@ Output ONLY the LaTeX paragraphs for this section. Do not include \\section comm
         return result  # pragma: no cover
 
     async def _fix_latex_errors(self, tex_source: str, error_log: str) -> str | None:
-        """Ask the LLM to fix LaTeX compilation errors using patch mode.
+        """Fix LaTeX compilation errors using surgical line-level replacement.
 
-        Instead of asking the LLM to return the entire document (which causes
-        504 timeouts on long documents), we ask for JSON patches [{old, new}].
+        Instead of asking the LLM to return the entire document, we:
+        1. Extract the error line number from the error log
+        2. Send only ±10 lines around the error to the LLM
+        3. LLM returns ONLY the fixed lines
+        4. We splice them back into the original document
+
+        Falls back to full-document mode only when no line number is found.
         """
         if len(error_log) > 3000:
             error_log = error_log[:1500] + "\n...[truncated]...\n" + error_log[-1500:]
 
-        # Extract error line number for focused context
+        # Extract error line number
         error_line = None
         line_match = re.search(r'(?:line\s+|l\.)(\d+)', error_log)
         if line_match:
             error_line = int(line_match.group(1))
 
-        # Build focused context around error
         tex_lines = tex_source.split('\n')
-        if error_line:
-            err_idx = max(0, error_line - 1)
-            start = max(0, err_idx - 20)
-            end = min(len(tex_lines), err_idx + 20)
-            context_lines = []
-            for i in range(start, end):
-                marker = " >>> " if i == err_idx else "     "
-                context_lines.append(f"{marker}{i+1}: {tex_lines[i]}")
-            context_text = "\n".join(context_lines)
+
+        # Classify error for targeted guidance
+        error_lower = error_log.lower()
+        targeted_hint = ""
+        if "invalid character" in error_lower or "unicode" in error_lower or "character" in error_lower:
+            targeted_hint = (
+                "Likely cause: Unicode characters (em-dash, en-dash, smart quotes, "
+                "non-ASCII). Replace with LaTeX equivalents: --- for em-dash, -- for "
+                "en-dash, standard quotes, \\alpha etc."
+            )
+        elif "undefined control sequence" in error_lower:
+            targeted_hint = "Likely cause: Typo in command name or missing \\usepackage."
+        elif "missing" in error_lower and ("begin" in error_lower or "end" in error_lower):
+            targeted_hint = "Likely cause: Mismatched \\begin/\\end environments."
+        elif "missing \\begin{document}" in error_lower:
+            targeted_hint = "Likely cause: Non-LaTeX content before \\begin{document}."
+
+        # ---- Surgical mode: line number known ----
+        if error_line and error_line <= len(tex_lines):
+            err_idx = error_line - 1  # 0-indexed
+            window_radius = 10
+            win_start = max(0, err_idx - window_radius)
+            win_end = min(len(tex_lines), err_idx + window_radius + 1)
+            snippet_lines = tex_lines[win_start:win_end]
+
+            # Number lines for clarity
+            numbered = "\n".join(
+                f"{win_start + i + 1:>5}: {line}"
+                for i, line in enumerate(snippet_lines)
+            )
+
+            system = (
+                "You are a LaTeX error fixer. You will receive a small snippet of "
+                "LaTeX lines around an error. Fix ONLY the broken lines.\n\n"
+                "Rules:\n"
+                "- Return ONLY the fixed lines (same count as input, no line numbers)\n"
+                "- Do NOT add or remove lines — keep exactly the same number of lines\n"
+                "- Do NOT wrap in markdown fences\n"
+                "- Change as little as possible — only fix the error"
+            )
+
+            prompt = (
+                f"LaTeX compilation error at line {error_line}:\n"
+                f"{error_log}\n\n"
+                f"{targeted_hint}\n\n"
+                f"Lines {win_start + 1}-{win_end} of the document:\n"
+                f"{numbered}\n\n"
+                f"Return the fixed version of these {len(snippet_lines)} lines. "
+                f"Output EXACTLY {len(snippet_lines)} lines, no more, no less."
+            )
+
+            try:
+                fixed_text = await self.generate(system, prompt)
+                fixed_text = fixed_text.strip()
+                # Strip markdown fences
+                if fixed_text.startswith("```"):
+                    flines = fixed_text.split("\n")
+                    flines = flines[1:]
+                    if flines and flines[-1].strip().startswith("```"):
+                        flines = flines[:-1]
+                    fixed_text = "\n".join(flines)
+                # Strip any line number prefixes the LLM might add
+                fixed_lines = fixed_text.split('\n')
+                cleaned = []
+                for fl in fixed_lines:
+                    stripped = re.sub(r'^\s*\d+\s*:\s?', '', fl)
+                    cleaned.append(stripped)
+                fixed_lines = cleaned
+
+                # Validate: should be roughly same line count
+                if abs(len(fixed_lines) - len(snippet_lines)) <= 2:
+                    # Splice back
+                    new_lines = tex_lines[:win_start] + fixed_lines + tex_lines[win_end:]
+                    result = '\n'.join(new_lines)
+                    self.log(
+                        f"  Surgical fix: replaced lines {win_start+1}-{win_end} "
+                        f"({len(snippet_lines)}→{len(fixed_lines)} lines)"
+                    )
+                    return result
+                else:
+                    self.log(
+                        f"  Surgical fix line count mismatch: "
+                        f"expected ~{len(snippet_lines)}, got {len(fixed_lines)}, "
+                        f"falling back to full-document mode"
+                    )
+            except Exception as exc:
+                self.log(f"  Surgical fix failed: {exc}, falling back")
+
+        # ---- Fallback: no line number or surgical fix failed ----
+        if len(tex_source) > 40000:
+            tex_for_prompt = (
+                '\n'.join(tex_lines[:80])
+                + "\n% ... [middle omitted] ...\n"
+                + '\n'.join(tex_lines[-50:])
+            )
         else:
-            # No line number — send first 100 + last 50 lines
-            if len(tex_lines) > 200:
-                context_text = "\n".join(
-                    f"     {i+1}: {l}" for i, l in enumerate(tex_lines[:100])
-                ) + "\n     ... [truncated] ...\n" + "\n".join(
-                    f"     {i+1}: {l}" for i, l in enumerate(tex_lines[-50:], len(tex_lines)-50)
-                )
-            else:
-                context_text = "\n".join(
-                    f"     {i+1}: {l}" for i, l in enumerate(tex_lines)
-                )
+            tex_for_prompt = tex_source
 
         system = (
-            "You are a LaTeX expert fixing compilation errors.\n"
-            "Return a JSON object with patches to fix the errors.\n"
-            "Each patch specifies exact text to find and replace.\n\n"
-            "Common fixes:\n"
-            "- Replace Unicode characters with LaTeX equivalents\n"
-            "- Fix unescaped special characters: % # & _ $ { }\n"
-            "- Fix mismatched \\begin/\\end environments\n"
-            "- Fix malformed table/tabular environments\n"
-            "- Comment out or remove \\includegraphics for missing files\n"
-            "- Fix undefined control sequences\n\n"
-            "Return ONLY valid JSON, no markdown fences."
+            "You are a LaTeX expert. Fix the compilation errors.\n"
+            "Return the COMPLETE fixed LaTeX document.\n"
+            "Do NOT wrap in markdown fences. Output ONLY LaTeX source.\n"
+            "Must start with \\documentclass and end with \\end{document}."
         )
-
         prompt = (
-            f"=== COMPILATION ERROR ===\n{error_log}\n=== END ERROR ===\n\n"
-            f"=== LATEX SOURCE (around error) ===\n{context_text}\n=== END SOURCE ===\n\n"
-            f"Return JSON:\n"
-            f'{{\n'
-            f'  "diagnosis": "brief explanation of root cause",\n'
-            f'  "patches": [\n'
-            f'    {{\n'
-            f'      "old": "exact text to find (copy from source above)",\n'
-            f'      "new": "replacement text",\n'
-            f'      "description": "what this fixes"\n'
-            f'    }}\n'
-            f'  ]\n'
-            f'}}'
+            f"=== ERROR ===\n{error_log}\n=== END ERROR ===\n"
+            f"{targeted_hint}\n\n"
+            f"=== LATEX SOURCE ===\n{tex_for_prompt}\n=== END SOURCE ===\n\n"
+            f"Fix the error and return the complete document."
         )
 
         try:
-            result = await self.generate_json(system, prompt)
-            patches = result.get("patches", [])
-            diagnosis = result.get("diagnosis", "")
-
-            if diagnosis:
-                self.log(f"  LLM diagnosis: {diagnosis}")
-
-            if not patches:
-                self.log("  LLM returned no patches")
+            fixed = await self.generate(system, prompt)
+            fixed = fixed.strip()
+            if fixed.startswith("```"):
+                lines = fixed.split("\n")[1:]
+                if lines and lines[-1].strip().startswith("```"):
+                    lines = lines[:-1]
+                fixed = "\n".join(lines)
+            if "\\documentclass" in fixed:
+                idx = fixed.index("\\documentclass")
+                if idx > 0:
+                    fixed = fixed[idx:]
+            if "\\documentclass" not in fixed:
+                self.log("  LLM fix missing \\documentclass, discarding")
                 return None
-
-            fixed = tex_source
-            applied = 0
-            for patch in patches:
-                if not isinstance(patch, dict):
-                    continue
-                old = patch.get("old", "")
-                new = patch.get("new", "")
-                desc = patch.get("description", "")
-                if old and new and old in fixed:
-                    fixed = fixed.replace(old, new, 1)
-                    applied += 1
-                    self.log(f"  Patch applied: {desc}")
-                elif old and old not in fixed:
-                    self.log(f"  Patch skipped (text not found): {desc}")
-
-            if applied == 0:
-                self.log("  No patches could be applied")
-                return None
-
             return fixed
 
         except Exception as e:
@@ -1467,6 +1514,10 @@ Output ONLY the LaTeX paragraphs for this section. Do not include \\section comm
         ]
         for pat in _LLM_ARTIFACT_PATTERNS:
             text = re.sub(pat, '', text, flags=re.IGNORECASE | re.MULTILINE)
+
+        # ── 0b. Strip control characters (U+0000–U+001F except \n \r \t) ──
+        # LLMs occasionally emit invisible control chars that crash tectonic
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
 
         # ── 1. Unicode replacements ──
         text = text.replace("\u2014", "---")  # em-dash
