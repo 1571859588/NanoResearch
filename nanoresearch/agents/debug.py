@@ -265,8 +265,17 @@ Diagnose the root cause and generate patches to fix it. Return JSON only."""
 
         filepath = code_dir / filename
         if not filepath.exists():
-            logger.warning(f"Patch target not found: {filepath}")
-            return False
+            # File doesn't exist — create it if old is empty (new file creation)
+            if not old_text or old_text.strip() == "":
+                filepath.parent.mkdir(parents=True, exist_ok=True)
+                filepath.write_text(new_text)
+                logger.info(f"Created new file: {filepath}")
+                return True
+            # LLM wants to patch a non-existent file — try creating with new_text
+            logger.warning(f"Patch target not found: {filepath}, creating with new content")
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            filepath.write_text(new_text)
+            return True
 
         content = filepath.read_text(errors="replace")
 
@@ -334,10 +343,10 @@ Diagnose the root cause and generate patches to fix it. Return JSON only."""
     ) -> bool:
         """When patching fails, ask LLM to rewrite the entire file."""
         filepath = code_dir / filename
-        if not filepath.exists():
-            return False
-
-        current_content = filepath.read_text(errors="replace")
+        is_new_file = not filepath.exists()
+        current_content = ""
+        if not is_new_file:
+            current_content = filepath.read_text(errors="replace")
 
         # Gather context from other files (imports they expect from this file)
         cross_refs = ""
@@ -353,23 +362,24 @@ Diagnose the root cause and generate patches to fix it. Return JSON only."""
                 cross_refs += f"\n{other_name} imports: {'; '.join(import_lines)}"
 
         system_prompt = (
-            "You are a senior ML engineer. Rewrite the following Python file to fix all errors. "
+            "You are a senior ML engineer. "
+            + ("Write" if is_new_file else "Rewrite")
+            + " the following Python file to fix all errors. "
             "The file must be COMPLETE and RUNNABLE with correct Python syntax and indentation. "
             "Keep the same functionality and class/function names. "
             "Make sure all names that other files import from this file are defined. "
             "Return ONLY the Python code, no markdown fences, no explanation."
         )
 
-        user_prompt = f"""File: {filename}
+        user_prompt = f"""File: {filename} ({'NEW FILE — does not exist yet' if is_new_file else 'existing file'})
 Error: {error_log[:1500]}
 
 Other files import from this file:
 {cross_refs}
 
-Current content:
-{current_content}
+{'This file needs to be CREATED from scratch.' if is_new_file else f'Current content:{chr(10)}{current_content}'}
 
-Rewrite this file with correct syntax. Return ONLY Python code."""
+{'Write' if is_new_file else 'Rewrite'} this file with correct syntax. Return ONLY Python code."""
 
         try:
             new_content = await self.generate(system_prompt, user_prompt)
@@ -385,14 +395,19 @@ Rewrite this file with correct syntax. Return ONLY Python code."""
                 new_content = "\n".join(lines)
 
             # Verify syntax before writing
+            filepath.parent.mkdir(parents=True, exist_ok=True)
             filepath.write_text(new_content)
             if self._check_syntax(filepath):
-                self.log(f"Rewrote {filename} successfully")
+                self.log(f"{'Created' if is_new_file else 'Rewrote'} {filename} successfully")
                 return True
             else:
-                # Rewrite also has syntax error — restore original
-                filepath.write_text(current_content)
-                self.log(f"Rewrite of {filename} also has syntax errors, rolled back")
+                # Rewrite also has syntax error — restore original or remove
+                if is_new_file:
+                    filepath.unlink(missing_ok=True)
+                    self.log(f"Created {filename} has syntax errors, removed")
+                else:
+                    filepath.write_text(current_content)
+                    self.log(f"Rewrite of {filename} also has syntax errors, rolled back")
                 return False
 
         except Exception as e:
