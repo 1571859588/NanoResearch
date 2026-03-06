@@ -16,6 +16,7 @@ from nanoresearch.agents.execution import ExecutionAgent
 from nanoresearch.agents.analysis import AnalysisAgent
 from nanoresearch.agents.figure_gen import FigureAgent
 from nanoresearch.agents.writing import WritingAgent
+from nanoresearch.agents.review import ReviewAgent
 from nanoresearch.config import ResearchConfig
 from nanoresearch.pipeline.workspace import Workspace
 from nanoresearch.schemas.manifest import PipelineStage
@@ -36,7 +37,7 @@ DEEP_STAGES = [
 # Map string stage names to agent classes
 DEEP_STAGE_NAMES = [
     "IDEATION", "PLANNING", "SETUP", "CODING",
-    "EXECUTION", "ANALYSIS", "FIGURE_GEN", "WRITING",
+    "EXECUTION", "ANALYSIS", "FIGURE_GEN", "WRITING", "REVIEW",
 ]
 
 
@@ -55,6 +56,7 @@ class DeepPipelineOrchestrator:
             "ANALYSIS": AnalysisAgent(workspace, config),
             "FIGURE_GEN": FigureAgent(workspace, config),
             "WRITING": WritingAgent(workspace, config),
+            "REVIEW": ReviewAgent(workspace, config),
         }
 
     async def close(self) -> None:
@@ -205,6 +207,19 @@ class DeepPipelineOrchestrator:
             inputs["experiment_results"] = analysis if analysis else exec_output.get("parsed_metrics", {})
             inputs["experiment_status"] = exec_output.get("final_status", "pending")
 
+        elif stage_name == "REVIEW":
+            # ReviewAgent needs the paper.tex content + context for quality check
+            writing_output = accumulated.get("writing_output", {})
+            paper_tex = writing_output.get("paper_tex", "")
+            if not paper_tex:
+                # Try reading from disk
+                tex_path = self.workspace.path / "drafts" / "paper.tex"
+                if tex_path.exists():
+                    paper_tex = tex_path.read_text(errors="replace")
+            inputs["paper_tex"] = paper_tex
+            inputs["ideation_output"] = accumulated.get("ideation_output", {})
+            inputs["experiment_blueprint"] = accumulated.get("experiment_blueprint", {})
+
         if last_error:
             inputs["_retry_error"] = last_error
 
@@ -221,6 +236,7 @@ class DeepPipelineOrchestrator:
             "ANALYSIS": "analysis_output",
             "FIGURE_GEN": "figure_gen_output",
             "WRITING": "writing_output",
+            "REVIEW": "review_output",
         }
         key = key_map.get(stage_name, stage_name.lower())
         return {key: result}
@@ -235,6 +251,7 @@ class DeepPipelineOrchestrator:
             "EXECUTION": "plans/execution_output.json",
             "ANALYSIS": "plans/analysis_output.json",
             "FIGURE_GEN": "drafts/figure_output.json",
+            "REVIEW": "drafts/review_output.json",
         }
         path = file_map.get(stage_name)
         if path:
