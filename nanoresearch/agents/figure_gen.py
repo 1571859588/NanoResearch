@@ -30,6 +30,7 @@ MAX_EVIDENCE_TRAINING_LOG_ENTRIES = 50  # cap training log in evidence block
 MAX_EVIDENCE_BLOCK_LEN = 8000  # cap total evidence block length
 MAX_IMAGE_RETRIES = 2  # retries before LLM diagnosis
 MAX_OPTIMIZED_PROMPT_LEN = 1500  # shorter prompt for retry after diagnosis
+MAX_CODE_CHART_RETRIES = 3  # retries for code chart generation (with error feedback)
 
 # ---------------------------------------------------------------------------
 # Prompts
@@ -313,11 +314,20 @@ DATA ANNOTATION:
   horizontal brackets where applicable.
 
 ADVANCED STYLING:
-- Error bars: use capsize=3, capthick=0.8, elinewidth=0.8.
+- Error bars: use capsize=3, elinewidth=0.8. Do NOT use 'capthick' (removed in recent matplotlib).
 - Bar chart edge: edgecolor='white', linewidth=0.5 for clean separation.
 - Scatter: edgecolor='white', linewidth=0.3, alpha=0.8 for depth effect.
 - Line plots: use distinct markers (o, s, D, ^, v) AND line styles (-, --, :, -.)
   so lines are distinguishable in grayscale.
+
+LAYOUT (MANDATORY):
+- ALWAYS call fig.tight_layout() (or plt.subplots_adjust()) before saving.
+- Figure size: use fig, ax = plt.subplots(figsize=(7, 4.5)) for single charts.
+  For multi-panel figures, increase height proportionally.
+- Prevent text overlap: rotate long x-tick labels (rotation=30, ha='right'),
+  abbreviate method names if >12 chars, use adjustText if installed.
+- Reserve space for legend: if legend outside axes, call fig.tight_layout(rect=[0,0,1,0.92]).
+- NEVER use deprecated matplotlib kwargs: 'capthick' does NOT exist. Only use capsize and elinewidth.
 
 SAVE:
 - Save as PNG at 300 DPI to the EXACT output_path specified.
@@ -337,7 +347,7 @@ CHART_TYPE_PROMPTS = {
         "DATA ANNOTATION:\n"
         "- Add numeric value labels on top of each bar (fontsize=7-8)\n"
         "- Best value in each group: fontweight='bold', slightly larger font\n"
-        "- If std available, add error bars (capsize=3, capthick=0.8, elinewidth=0.8)\n"
+        "- If std available, add error bars (capsize=3, elinewidth=0.8). Do NOT use capthick.\n"
         "- Use '±' notation in value labels when std is shown\n\n"
         "AXES:\n"
         "- Y-axis: start from a value ~3-5% below the minimum to magnify differences\n"
@@ -1548,72 +1558,101 @@ class FigureAgent(BaseResearchAgent):
         user_prompt: str,
         caption: str,
     ) -> dict[str, Any]:
-        """Have LLM generate plotting code, then execute it to create the chart."""
+        """Have LLM generate plotting code, then execute it to create the chart.
+
+        Retries up to MAX_CODE_CHART_RETRIES times, feeding error messages
+        back to the LLM so it can fix matplotlib API issues, missing imports, etc.
+        """
         filename_stem = fig_key
-
-        # Step 1: LLM generates the plotting script
         figure_code_config = self.config.for_stage("figure_code")
-        try:
-            code = await self._dispatcher.generate(
-                figure_code_config, CHART_CODE_SYSTEM, user_prompt
-            )
-        except Exception as e:
-            logger.warning("LLM code generation failed for %s: %s", fig_key, e)
-            return self._generate_fallback_chart(fig_key, filename_stem, caption)
-        code = code.strip()
-
-        # Strip markdown fences if present
-        if code.startswith("```"):
-            lines = code.split("\n")
-            lines = [l for l in lines[1:] if not l.strip().startswith("```")]
-            code = "\n".join(lines)
-
-        # Save the generated code for debugging/reproducibility
-        code_path = self.workspace.write_text(
-            f"figures/{filename_stem}_plot.py", code
-        )
-        self.log(f"  {fig_key} plotting code generated ({len(code)} chars)")
-
-        # Step 2: Execute the plotting script
         png_path = Path(output_path)
         png_path.parent.mkdir(parents=True, exist_ok=True)
+        last_error = ""
 
-        try:
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None,
-                partial(
-                    subprocess.run,
-                    [sys.executable, str(code_path)],
-                    capture_output=True,
-                    text=True,
-                    timeout=CHART_EXEC_TIMEOUT,
-                    cwd=str(self.workspace.path),
-                ),
-            )
-            if result.returncode != 0:
-                self.log(f"  {fig_key} code execution failed: {result.stderr[:500]}")
-                # Save error log
-                self.workspace.write_text(
-                    f"logs/{filename_stem}_error.log",
-                    f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}",
+        for attempt in range(MAX_CODE_CHART_RETRIES):
+            # Build prompt — on retry, include the error feedback
+            current_prompt = user_prompt
+            if last_error:
+                current_prompt += (
+                    f"\n\n=== PREVIOUS ATTEMPT FAILED (attempt {attempt}) ===\n"
+                    f"Error:\n{last_error[:1500]}\n\n"
+                    f"Common fixes:\n"
+                    f"- 'capthick' does NOT exist in matplotlib — remove it entirely\n"
+                    f"- Check that all kwargs are valid for your matplotlib version\n"
+                    f"- Ensure the output path is exactly: {output_path}\n"
+                    f"- Use fig.tight_layout() before saving\n"
+                    f"=== FIX THE ERROR AND REGENERATE THE COMPLETE CODE ==="
                 )
-                # Fallback: generate a simple placeholder
-                return self._generate_fallback_chart(fig_key, filename_stem, caption)
-        except subprocess.TimeoutExpired:
-            self.log(f"  {fig_key} code execution timed out")
-            return self._generate_fallback_chart(fig_key, filename_stem, caption)
-        except Exception as exc:
-            self.log(f"  {fig_key} code execution error: {exc}")
-            return self._generate_fallback_chart(fig_key, filename_stem, caption)
 
-        if not png_path.exists():
-            self.log(f"  {fig_key} code ran but PNG not generated at {output_path}")
-            return self._generate_fallback_chart(fig_key, filename_stem, caption)
+            # Step 1: LLM generates the plotting script
+            try:
+                code = await self._dispatcher.generate(
+                    figure_code_config, CHART_CODE_SYSTEM, current_prompt
+                )
+            except Exception as e:
+                last_error = f"LLM generation error: {e}"
+                self.log(f"  {fig_key} attempt {attempt + 1}/{MAX_CODE_CHART_RETRIES} LLM failed: {e}")
+                continue
 
-        self.log(f"  {fig_key} saved (LLM-generated code)")
-        return self._save_figure_files(fig_key, filename_stem, caption,
-                                       png_path.read_bytes(), already_saved=True)
+            code = code.strip()
+            # Strip markdown fences if present
+            if code.startswith("```"):
+                lines = code.split("\n")
+                lines = [l for l in lines[1:] if not l.strip().startswith("```")]
+                code = "\n".join(lines)
+
+            # Save the generated code for debugging/reproducibility
+            code_path = self.workspace.write_text(
+                f"figures/{filename_stem}_plot.py", code
+            )
+            self.log(f"  {fig_key} attempt {attempt + 1} code generated ({len(code)} chars)")
+
+            # Step 2: Execute the plotting script
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    partial(
+                        subprocess.run,
+                        [sys.executable, str(code_path)],
+                        capture_output=True,
+                        text=True,
+                        timeout=CHART_EXEC_TIMEOUT,
+                        cwd=str(self.workspace.path),
+                    ),
+                )
+                if result.returncode != 0:
+                    last_error = result.stderr[:1500]
+                    self.log(f"  {fig_key} attempt {attempt + 1} execution failed: {last_error[:300]}")
+                    self.workspace.write_text(
+                        f"logs/{filename_stem}_error.log",
+                        f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}",
+                    )
+                    continue
+            except subprocess.TimeoutExpired:
+                last_error = f"Execution timed out after {CHART_EXEC_TIMEOUT}s"
+                self.log(f"  {fig_key} attempt {attempt + 1} timed out")
+                continue
+            except Exception as exc:
+                last_error = str(exc)
+                self.log(f"  {fig_key} attempt {attempt + 1} error: {exc}")
+                continue
+
+            # Step 3: Verify PNG was created
+            if not png_path.exists():
+                last_error = f"Code ran successfully but PNG not generated at {output_path}"
+                self.log(f"  {fig_key} attempt {attempt + 1}: {last_error}")
+                continue
+
+            self.log(f"  {fig_key} saved (attempt {attempt + 1})")
+            return self._save_figure_files(fig_key, filename_stem, caption,
+                                           png_path.read_bytes(), already_saved=True)
+
+        # All retries exhausted — use fallback placeholder
+        self.log(f"  {fig_key} all {MAX_CODE_CHART_RETRIES} attempts failed, using fallback")
+        result = self._generate_fallback_chart(fig_key, filename_stem, caption)
+        result["is_fallback"] = True
+        return result
 
     def _generate_fallback_chart(
         self, fig_key: str, filename_stem: str, caption: str,

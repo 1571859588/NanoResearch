@@ -215,7 +215,7 @@ class WritingAgent(BaseResearchAgent):
             if label == "sec:method":
                 # 1) Pipeline / architecture figure → top of Method section
                 for fk in list(fig_keys):
-                    if fk in figure_blocks:
+                    if fk in figure_blocks and fk not in placed_figures:
                         for kw in ("overview", "framework", "pipeline", "architecture"):
                             if kw in fk:
                                 content = figure_blocks[fk] + "\n\n" + content
@@ -245,7 +245,18 @@ class WritingAgent(BaseResearchAgent):
                 if sec.label == "sec:experiments":
                     for fk in remaining:
                         sec.content += "\n\n" + figure_blocks[fk]
+                        placed_figures.add(fk)
                     break
+
+        # Log final figure placement order for debugging
+        fig_order = []
+        label_pattern = re.compile(r'\\label\{fig:(\w+)\}')
+        for sec in sections:
+            for m in label_pattern.finditer(sec.content):
+                fig_order.append(m.group(1))
+        self.log(f"Figure placement order: {fig_order}")
+        if remaining:
+            self.log(f"  (fallback-injected into Experiments: {remaining})")
 
         # Step 5: Build skeleton
         skeleton = PaperSkeleton(
@@ -602,6 +613,8 @@ Every component listed above should appear in the ablation table.
                 lines.append("")
                 lines.append("--- Comparison with Baselines ---")
                 if isinstance(comparison, dict):
+                    # Collect metric names for table header
+                    all_metric_names: list[str] = []
                     for method_name, method_metrics in comparison.items():
                         if isinstance(method_metrics, dict):
                             metrics_str = ", ".join(
@@ -609,10 +622,28 @@ Every component listed above should appear in the ablation table.
                                 if v is not None
                             )
                             lines.append(f"  {method_name}: {metrics_str}")
+                            for k in method_metrics:
+                                if k not in all_metric_names:
+                                    all_metric_names.append(k)
                         else:
                             lines.append(f"  {method_name}: {method_metrics}")
+
+                    # Pre-formatted table data to make it impossible to miss
+                    if all_metric_names:
+                        lines.append("")
+                        lines.append("=== MAIN RESULTS TABLE DATA (use in Table~\\ref{tab:main_results}) ===")
+                        header = "Method & " + " & ".join(all_metric_names) + " \\\\"
+                        lines.append(header)
+                        lines.append("\\midrule")
+                        for method_name, method_metrics in comparison.items():
+                            if isinstance(method_metrics, dict):
+                                vals = []
+                                for mn in all_metric_names:
+                                    v = method_metrics.get(mn)
+                                    vals.append(str(v) if v is not None else "-")
+                                lines.append(f"{method_name} & " + " & ".join(vals) + " \\\\")
+                        lines.append("=== END TABLE DATA ===")
                 elif isinstance(comparison, str):
-                    # Text description — include as-is
                     lines.append(f"  {comparison}")
                 elif isinstance(comparison, list):
                     for entry in comparison:
@@ -646,6 +677,8 @@ Every component listed above should appear in the ablation table.
             if ablation:
                 lines.append("")
                 lines.append("--- Ablation Results (real) ---")
+                # Collect all metric names from ablation entries
+                abl_metric_names: list[str] = []
                 for entry in ablation:
                     if not isinstance(entry, dict):
                         continue
@@ -653,10 +686,31 @@ Every component listed above should appear in the ablation table.
                     for metric in entry.get("metrics", []):
                         if not isinstance(metric, dict):
                             continue
+                        mn = metric.get("metric_name", "?")
                         val = metric.get("value", "?")
-                        lines.append(
-                            f"  {variant}: {metric.get('metric_name', '?')} = {val}"
-                        )
+                        lines.append(f"  {variant}: {mn} = {val}")
+                        if mn not in abl_metric_names:
+                            abl_metric_names.append(mn)
+
+                # Pre-formatted ablation table data
+                if abl_metric_names:
+                    lines.append("")
+                    lines.append("=== ABLATION TABLE DATA (use in Table~\\ref{tab:ablation}) ===")
+                    header = "Variant & " + " & ".join(abl_metric_names) + " \\\\"
+                    lines.append(header)
+                    lines.append("\\midrule")
+                    for entry in ablation:
+                        if not isinstance(entry, dict):
+                            continue
+                        variant = entry.get("variant_name", "?")
+                        metric_map = {
+                            m.get("metric_name", ""): m.get("value", "-")
+                            for m in entry.get("metrics", [])
+                            if isinstance(m, dict)
+                        }
+                        vals = [str(metric_map.get(mn, "-")) for mn in abl_metric_names]
+                        lines.append(f"{variant} & " + " & ".join(vals) + " \\\\")
+                    lines.append("=== END ABLATION TABLE DATA ===")
 
             lines.append("=== END REAL EXPERIMENT RESULTS ===")
             return "\n".join(lines)
