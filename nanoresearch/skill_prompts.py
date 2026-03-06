@@ -22,6 +22,8 @@ LATEX:
 - Use --- for em-dashes, -- for en-dashes (NOT Unicode). Escape % as \%.
 - \begin{equation} for single equations, \begin{align} for multi-line (NEVER eqnarray).
 - Non-breaking spaces: Figure~\ref{}, Table~\ref{}, Eq.~\eqref{}.
+- EVERY \label{eq:...} MUST be referenced via \eqref{eq:...} or Eq.~\eqref{eq:...} in the text.
+  Do NOT define a labeled equation without referencing it. If an equation needs no reference, omit the \label.
 
 CITATIONS:
 - Use ONLY citation keys from the provided list. Do NOT invent keys.
