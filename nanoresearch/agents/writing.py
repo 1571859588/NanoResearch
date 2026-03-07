@@ -10,8 +10,9 @@ import json
 import logging
 import re
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from nanoresearch.agents.base import BaseResearchAgent
 from nanoresearch.agents.tools import ToolDefinition, ToolRegistry
@@ -25,6 +26,61 @@ from nanoresearch.skill_prompts import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# GroundingPacket — structured evidence summary for all section generators
+# ---------------------------------------------------------------------------
+
+ResultCompleteness = Literal["full", "partial", "quick_eval", "none"]
+
+
+@dataclass
+class GroundingPacket:
+    """Structured summary of all evidence available for paper writing.
+
+    Built once from execution/analysis outputs, consumed by every section
+    generator so they share a consistent view of what evidence exists.
+    """
+
+    experiment_status: str = "pending"
+    result_completeness: ResultCompleteness = "none"
+
+    # Structured results
+    main_results: list[dict] = field(default_factory=list)
+    ablation_results: list[dict] = field(default_factory=list)
+    comparison_with_baselines: dict = field(default_factory=dict)
+    final_metrics: dict = field(default_factory=dict)
+
+    # Narrative evidence
+    key_findings: list[str] = field(default_factory=list)
+    limitations: list[str] = field(default_factory=list)
+    training_dynamics: str = ""
+    analysis_summary: str = ""
+    experiment_summary_md: str = ""
+
+    # Evidence gaps — things the paper cannot ground
+    evidence_gaps: list[str] = field(default_factory=list)
+
+    # Pre-built LaTeX table scaffolds (empty string if not available)
+    main_table_latex: str = ""
+    ablation_table_latex: str = ""
+
+    @property
+    def has_real_results(self) -> bool:
+        return self.result_completeness != "none"
+
+    def to_output_dict(self) -> dict:
+        """Serialize for inclusion in writing output metadata."""
+        return {
+            "experiment_status": self.experiment_status,
+            "result_completeness": self.result_completeness,
+            "has_real_results": self.has_real_results,
+            "num_main_results": len(self.main_results),
+            "num_ablation_results": len(self.ablation_results),
+            "has_baseline_comparison": bool(self.comparison_with_baselines),
+            "evidence_gaps": self.evidence_gaps,
+        }
 
 # Configurable limits
 MAX_PAPERS_FOR_CITATIONS = 50
@@ -157,31 +213,53 @@ class WritingAgent(BaseResearchAgent):
         figure_output: dict = inputs.get("figure_output", {})
         template_format: str = inputs.get("template_format", self.config.template_format)
         experiment_results: dict = inputs.get("experiment_results", {})
+        experiment_analysis: dict = inputs.get("experiment_analysis", {})
+        experiment_summary: str = inputs.get("experiment_summary", "")
         experiment_status: str = inputs.get("experiment_status", "pending")
         authors: list[str] = inputs.get("authors", None) or ["NanoResearch"]
 
         self.log("Starting paper writing")
-        if experiment_results:
-            self.log(f"Using REAL experiment results (status: {experiment_status})")
-        else:
-            self.log(f"No real experiment results (status: {experiment_status})")
 
-        # Step 0: Build cite key mapping from papers
+        # Step 0a: Build grounding packet — single source of truth for evidence
+        grounding = self._build_grounding_packet(
+            experiment_results,
+            experiment_status,
+            experiment_analysis,
+            experiment_summary,
+            blueprint,
+        )
+        self.log(
+            f"Grounding: completeness={grounding.result_completeness}, "
+            f"main_results={len(grounding.main_results)}, "
+            f"ablations={len(grounding.ablation_results)}, "
+            f"baselines={'yes' if grounding.comparison_with_baselines else 'no'}"
+        )
+        if grounding.evidence_gaps:
+            self.log(f"Evidence gaps: {grounding.evidence_gaps}")
+
+        # Step 0b: Build cite key mapping from papers
         papers = ideation.get("papers", [])
         cite_keys = self._build_cite_keys(papers)
         bibtex = self._build_bibtex(papers, cite_keys)
 
         # Build shared context (with cite keys)
         context = self._build_context(
-            ideation, blueprint, cite_keys, experiment_results, experiment_status
+            ideation,
+            blueprint,
+            cite_keys,
+            experiment_results,
+            experiment_status,
+            experiment_analysis,
+            experiment_summary,
+            grounding,
         )
 
         # Step 1: Generate title
         title = await self._generate_title(context)
         self.log(f"Title: {title}")
 
-        # Step 2: Generate abstract
-        abstract = await self._generate_abstract(context)
+        # Step 2: Generate abstract (with result number binding)
+        abstract = await self._generate_abstract(context, grounding)
         self.log("Abstract generated")
 
         # Step 3: Build figures & table data from blueprint
@@ -208,17 +286,64 @@ class WritingAgent(BaseResearchAgent):
                     f"\nFigures ALREADY placed in previous sections (do NOT include again): "
                     f"{placed_list}\n"
                 )
+            # Inject pre-built tables for Experiments section
+            table_injection = ""
+            if label == "sec:experiments" and grounding.has_real_results:
+                table_parts = []
+                if grounding.main_table_latex:
+                    table_parts.append(
+                        "=== PRE-BUILT MAIN RESULTS TABLE (use this EXACTLY, do NOT rebuild) ===\n"
+                        + grounding.main_table_latex
+                        + "\n=== END PRE-BUILT TABLE ==="
+                    )
+                if grounding.ablation_table_latex:
+                    table_parts.append(
+                        "=== PRE-BUILT ABLATION TABLE (use this EXACTLY, do NOT rebuild) ===\n"
+                        + grounding.ablation_table_latex
+                        + "\n=== END PRE-BUILT TABLE ==="
+                    )
+                if table_parts:
+                    table_injection = "\n\n" + "\n\n".join(table_parts)
+
+            # Conclusion-specific result-number binding
+            conclusion_binding = ""
+            if label == "sec:conclusion":
+                if grounding.has_real_results and grounding.final_metrics:
+                    metric_strs = [f"{k}={v}" for k, v in list(grounding.final_metrics.items())[:5]]
+                    conclusion_binding = (
+                        "\n\n=== CONCLUSION RESULT BINDING ===\n"
+                        f"Real metrics to reference: {', '.join(metric_strs)}\n"
+                        "Mention key results quantitatively when summarizing contributions. "
+                        "Use the exact numbers above.\n"
+                        "=== END BINDING ==="
+                    )
+                elif not grounding.has_real_results:
+                    conclusion_binding = (
+                        "\n\n=== CONCLUSION RESULT BINDING ===\n"
+                        "No real experiment results. Do NOT cite specific performance numbers. "
+                        "Focus on method design and future work.\n"
+                        "=== END BINDING ==="
+                    )
+
             context_with_figs = (
                 f"{context}\n\n"
                 f"=== AVAILABLE FIGURES (use \\ref{{fig:NAME}} to reference) ===\n"
                 f"{fig_list_text}\n"
                 f"{placed_note}"
                 f"=== END FIGURES ==="
+                f"{table_injection}"
+                f"{conclusion_binding}"
             )
 
             content = await self._generate_section(
                 context_with_figs, heading, instructions, prior_sections_summary
             )
+
+            # ── Post-generation table verification for Experiments ──
+            if label == "sec:experiments" and grounding.has_real_results:
+                content = self._verify_and_inject_tables(
+                    content, grounding, heading,
+                )
 
             # ── Detect figures the LLM already embedded in section content ──
             # This prevents the code from placing the same figures again.
@@ -460,6 +585,7 @@ class WritingAgent(BaseResearchAgent):
         result = {
             "tex_path": str(tex_path),
             "bib_path": str(bib_path),
+            "grounding": grounding.to_output_dict(),
         }
         if "pdf_path" in pdf_result:
             result["pdf_path"] = pdf_result["pdf_path"]
@@ -544,6 +670,9 @@ class WritingAgent(BaseResearchAgent):
         cite_keys: dict[int, str],
         experiment_results: dict | None = None,
         experiment_status: str = "pending",
+        experiment_analysis: dict | None = None,
+        experiment_summary: str = "",
+        grounding: GroundingPacket | None = None,
     ) -> str:
         """Build shared context string with cite keys for all section prompts."""
         topic = ideation.get("topic", "")
@@ -572,9 +701,20 @@ class WritingAgent(BaseResearchAgent):
                 )
 
         # Build evidence and provenance context
+        normalized_results = self._normalize_experiment_results(
+            experiment_results or {},
+            blueprint,
+            experiment_analysis or {},
+        )
         evidence_lines = self._build_evidence_context(ideation, blueprint)
         real_results_lines = self._build_real_results_context(
-            experiment_results or {}, experiment_status
+            normalized_results,
+            experiment_status,
+        )
+        analysis_lines = self._build_experiment_analysis_context(
+            experiment_analysis or {},
+            experiment_summary,
+            experiment_status,
         )
 
         # Build full-text summaries from top papers (for deeper writing)
@@ -625,6 +765,12 @@ Ablation Groups: {json.dumps([a.get('group_name', '') for a in ablations], ensur
 {evidence_lines}
 
 {real_results_lines}
+
+{analysis_lines}
+
+{self._build_baseline_comparison_context(grounding)}
+
+{self._build_grounding_status_context(grounding)}
 
 === CITATION KEYS (use ONLY these exact keys with \\cite{{}}) ===
 {chr(10).join(ref_lines)}
@@ -741,6 +887,351 @@ Every component listed above should appear in the ablation table.
         return "\n".join(lines)
 
     @staticmethod
+    def _normalize_experiment_results(
+        experiment_results: dict,
+        blueprint: dict,
+        experiment_analysis: dict,
+    ) -> dict:
+        """Coerce raw execution/analysis metrics into the main_results schema."""
+        normalized = dict(experiment_results) if isinstance(experiment_results, dict) else {}
+        analysis_payload = experiment_analysis if isinstance(experiment_analysis, dict) else {}
+        main_results = normalized.get("main_results")
+        if isinstance(main_results, list) and main_results:
+            if not normalized.get("ablation_results") and isinstance(
+                analysis_payload.get("ablation_results"), list
+            ):
+                normalized["ablation_results"] = analysis_payload.get("ablation_results", [])
+            return normalized
+
+        metric_snapshot = analysis_payload.get("final_metrics", {})
+        if not isinstance(metric_snapshot, dict) or not metric_snapshot:
+            metric_snapshot = {
+                key: value
+                for key, value in normalized.items()
+                if isinstance(value, (int, float, str, bool))
+            }
+        if not metric_snapshot:
+            return normalized
+
+        datasets = blueprint.get("datasets", [])
+        dataset_name = "Unknown Dataset"
+        if isinstance(datasets, list) and datasets:
+            first_dataset = datasets[0]
+            if isinstance(first_dataset, dict):
+                dataset_name = str(first_dataset.get("name", dataset_name)) or dataset_name
+            else:
+                dataset_name = str(first_dataset) or dataset_name
+
+        method_name = (
+            blueprint.get("proposed_method", {}).get("name")
+            or "Proposed Method"
+        )
+        normalized["main_results"] = [
+            {
+                "method_name": method_name,
+                "dataset": dataset_name,
+                "is_proposed": True,
+                "metrics": [
+                    {"metric_name": key, "value": value}
+                    for key, value in metric_snapshot.items()
+                ],
+            }
+        ]
+        if not normalized.get("ablation_results") and isinstance(
+            analysis_payload.get("ablation_results"), list
+        ):
+            normalized["ablation_results"] = analysis_payload.get("ablation_results", [])
+        return normalized
+
+    # ---- grounding packet construction ----------------------------------------
+
+    @classmethod
+    def _classify_completeness(
+        cls,
+        experiment_status: str,
+        main_results: list[dict],
+        experiment_analysis: dict,
+    ) -> ResultCompleteness:
+        """Classify how complete the experiment results are."""
+        status_lower = (experiment_status or "").lower()
+        if status_lower in ("pending", "failed", "error", "unknown", ""):
+            return "none"
+        if not main_results:
+            return "none"
+        # Check for quick-eval markers
+        is_quick = (
+            "quick" in status_lower
+            or experiment_analysis.get("is_quick_eval", False)
+            or "quick-eval" in experiment_analysis.get("summary", "").lower()
+            or "quick_eval" in status_lower
+        )
+        if is_quick:
+            return "quick_eval"
+        # Check for partial results (e.g., only 1 dataset out of planned N)
+        converged = experiment_analysis.get("converged")
+        if converged is False:
+            return "partial"
+        return "full"
+
+    @classmethod
+    def _build_grounding_packet(
+        cls,
+        experiment_results: dict,
+        experiment_status: str,
+        experiment_analysis: dict,
+        experiment_summary: str,
+        blueprint: dict,
+    ) -> GroundingPacket:
+        """Build a GroundingPacket from all available evidence sources."""
+        normalized = cls._normalize_experiment_results(
+            experiment_results or {}, blueprint, experiment_analysis or {}
+        )
+        analysis = experiment_analysis if isinstance(experiment_analysis, dict) else {}
+        main_results = normalized.get("main_results", [])
+        if not isinstance(main_results, list):
+            main_results = []
+        ablation_results = normalized.get("ablation_results", [])
+        if not isinstance(ablation_results, list):
+            ablation_results = []
+        comparison = analysis.get("comparison_with_baselines", {})
+        if not isinstance(comparison, dict):
+            comparison = {}
+        final_metrics = analysis.get("final_metrics", {})
+        if not isinstance(final_metrics, dict):
+            final_metrics = {}
+
+        completeness = cls._classify_completeness(
+            experiment_status, main_results, analysis,
+        )
+
+        # Identify evidence gaps
+        gaps: list[str] = []
+        if completeness == "none":
+            gaps.append("No experiment results available")
+        elif completeness == "quick_eval":
+            gaps.append("Results are from quick-eval only (limited epochs/data)")
+        if not ablation_results:
+            gaps.append("No ablation study results")
+        if not comparison:
+            gaps.append("No baseline comparison data from analysis")
+
+        packet = GroundingPacket(
+            experiment_status=experiment_status,
+            result_completeness=completeness,
+            main_results=main_results,
+            ablation_results=ablation_results,
+            comparison_with_baselines=comparison,
+            final_metrics=final_metrics,
+            key_findings=analysis.get("key_findings", []) or [],
+            limitations=analysis.get("limitations", []) or [],
+            training_dynamics=str(analysis.get("training_dynamics", "")),
+            analysis_summary=str(analysis.get("summary", "")),
+            experiment_summary_md=experiment_summary or "",
+            evidence_gaps=gaps,
+        )
+
+        # Pre-build deterministic tables when data is available
+        if packet.has_real_results:
+            packet.main_table_latex = cls._build_main_table_latex(
+                main_results, comparison, blueprint,
+            )
+            if ablation_results:
+                packet.ablation_table_latex = cls._build_ablation_table_latex(
+                    ablation_results, blueprint,
+                )
+
+        return packet
+
+    @staticmethod
+    def _build_main_table_latex(
+        main_results: list[dict],
+        comparison: dict,
+        blueprint: dict,
+    ) -> str:
+        """Build a deterministic LaTeX main-results table from structured data.
+
+        Returns empty string if data is insufficient.
+        """
+        if not main_results:
+            return ""
+
+        # Collect all metric names across all entries
+        all_metrics: list[str] = []
+        seen: set[str] = set()
+        for entry in main_results:
+            for m in entry.get("metrics", []):
+                if not isinstance(m, dict):
+                    continue
+                name = m.get("metric_name", "")
+                if name and name not in seen:
+                    all_metrics.append(name)
+                    seen.add(name)
+        if not all_metrics:
+            return ""
+
+        # Build rows: first from comparison_with_baselines, then main_results
+        rows: list[tuple[str, bool, dict[str, str]]] = []  # (method, is_proposed, {metric: val_str})
+        proposed_name = ""
+
+        # Rows from main_results
+        for entry in main_results:
+            method = entry.get("method_name", "?")
+            is_proposed = entry.get("is_proposed", False)
+            if is_proposed:
+                proposed_name = method
+            metric_vals: dict[str, str] = {}
+            for m in entry.get("metrics", []):
+                if not isinstance(m, dict):
+                    continue
+                name = m.get("metric_name", "")
+                val = m.get("value")
+                std = m.get("std")
+                if val is not None:
+                    val_str = f"{val}"
+                    if std is not None:
+                        val_str += f" $\\pm$ {std}"
+                    metric_vals[name] = val_str
+            rows.append((method, is_proposed, metric_vals))
+
+        # Add baseline rows from comparison_with_baselines that aren't already in rows
+        existing_methods = {r[0].lower() for r in rows}
+        for method_name, method_metrics in comparison.items():
+            if method_name.lower() in existing_methods:
+                continue
+            if method_name.lower() in ("our_method", "proposed", "ours"):
+                continue
+            if not isinstance(method_metrics, dict):
+                continue
+            metric_vals = {}
+            for metric_name in all_metrics:
+                val = method_metrics.get(metric_name)
+                if val is not None:
+                    metric_vals[metric_name] = str(val)
+            if metric_vals:  # only add if has any values
+                rows.append((method_name, False, metric_vals))
+
+        if len(rows) < 1:
+            return ""
+
+        # Sort: baselines first, proposed method last
+        baseline_rows = [r for r in rows if not r[1]]
+        proposed_rows = [r for r in rows if r[1]]
+        sorted_rows = baseline_rows + proposed_rows
+
+        # Build LaTeX
+        n_metrics = len(all_metrics)
+        col_spec = "@{}l" + "c" * n_metrics + "@{}"
+        header_cells = " & ".join(all_metrics)
+
+        lines = [
+            "\\begin{table}[t!]",
+            "\\centering",
+            "\\small",
+            "\\setlength{\\tabcolsep}{4pt}",
+            f"\\caption{{Main experimental results. Best results are in \\textbf{{bold}}.}}",
+            "\\label{tab:main_results}",
+            f"\\begin{{tabular}}{{{col_spec}}}",
+            "\\toprule",
+            f"Method & {header_cells} \\\\",
+            "\\midrule",
+        ]
+
+        # Find best value per metric (for bolding)
+        best_vals: dict[str, float] = {}
+        for _, _, mv in sorted_rows:
+            for metric_name in all_metrics:
+                val_str = mv.get(metric_name, "")
+                try:
+                    val_num = float(val_str.split("$")[0].strip())
+                    if metric_name not in best_vals or val_num > best_vals[metric_name]:
+                        best_vals[metric_name] = val_num
+                except (ValueError, IndexError):
+                    pass
+
+        for method, is_proposed, metric_vals in sorted_rows:
+            cells = []
+            for metric_name in all_metrics:
+                val_str = metric_vals.get(metric_name, "--")
+                # Bold best value
+                try:
+                    val_num = float(val_str.split("$")[0].strip())
+                    if metric_name in best_vals and abs(val_num - best_vals[metric_name]) < 1e-9:
+                        val_str = f"\\textbf{{{val_str}}}"
+                except (ValueError, IndexError):
+                    pass
+                cells.append(val_str)
+            method_display = f"{method} (Ours)" if is_proposed else method
+            lines.append(f"{method_display} & {' & '.join(cells)} \\\\")
+
+        lines.extend([
+            "\\bottomrule",
+            "\\end{tabular}",
+            "\\end{table}",
+        ])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_ablation_table_latex(
+        ablation_results: list[dict],
+        blueprint: dict,
+    ) -> str:
+        """Build a deterministic LaTeX ablation table from structured data."""
+        if not ablation_results:
+            return ""
+
+        # Collect metric names
+        all_metrics: list[str] = []
+        seen: set[str] = set()
+        for entry in ablation_results:
+            for m in entry.get("metrics", []):
+                if not isinstance(m, dict):
+                    continue
+                name = m.get("metric_name", "")
+                if name and name not in seen:
+                    all_metrics.append(name)
+                    seen.add(name)
+        if not all_metrics:
+            return ""
+
+        n_metrics = len(all_metrics)
+        col_spec = "@{}l" + "c" * n_metrics + "@{}"
+        header_cells = " & ".join(all_metrics)
+
+        lines = [
+            "\\begin{table}[t!]",
+            "\\centering",
+            "\\small",
+            "\\setlength{\\tabcolsep}{4pt}",
+            "\\caption{Ablation study. Each row removes or replaces one component.}",
+            "\\label{tab:ablation}",
+            f"\\begin{{tabular}}{{{col_spec}}}",
+            "\\toprule",
+            f"Variant & {header_cells} \\\\",
+            "\\midrule",
+        ]
+
+        for entry in ablation_results:
+            variant = entry.get("variant_name", "?")
+            cells = []
+            for metric_name in all_metrics:
+                val_str = "--"
+                for m in entry.get("metrics", []):
+                    if isinstance(m, dict) and m.get("metric_name") == metric_name:
+                        val = m.get("value")
+                        if val is not None:
+                            val_str = str(val)
+                        break
+                cells.append(val_str)
+            lines.append(f"{variant} & {' & '.join(cells)} \\\\")
+
+        lines.extend([
+            "\\bottomrule",
+            "\\end{tabular}",
+            "\\end{table}",
+        ])
+        return "\n".join(lines)
+
+    @staticmethod
     def _build_real_results_context(
         experiment_results: dict, experiment_status: str
     ) -> str:
@@ -748,9 +1239,10 @@ Every component listed above should appear in the ablation table.
         main_results = experiment_results.get("main_results", [])
         if not isinstance(main_results, list):
             main_results = []
+        normalized_status = (experiment_status or "").lower()
         has_real = bool(
             experiment_results
-            and experiment_status.lower() in ("success", "completed")
+            and normalized_status not in ("pending", "failed", "error", "unknown")
             and main_results
         )
 
@@ -819,7 +1311,166 @@ Every component listed above should appear in the ablation table.
                 "=== END EXPERIMENT RESULTS ==="
             )
 
+    @staticmethod
+    def _build_experiment_analysis_context(
+        experiment_analysis: dict,
+        experiment_summary: str,
+        experiment_status: str,
+    ) -> str:
+        """Build a compact narrative summary from execution analysis artifacts."""
+        if not experiment_analysis and not experiment_summary:
+            return ""
+
+        lines = [
+            "=== EXPERIMENT ANALYSIS SUMMARY ===",
+            f"Status: {experiment_status}",
+        ]
+
+        summary = str(experiment_analysis.get("summary", "")).strip()
+        if summary:
+            lines.append(f"Summary: {summary}")
+
+        converged = experiment_analysis.get("converged")
+        if converged is not None:
+            lines.append(f"Converged: {converged}")
+
+        final_metrics = experiment_analysis.get("final_metrics", {})
+        if isinstance(final_metrics, dict) and final_metrics:
+            lines.append("Final metrics snapshot:")
+            for key, value in final_metrics.items():
+                lines.append(f"- {key}: {value}")
+
+        key_findings = experiment_analysis.get("key_findings", [])
+        if isinstance(key_findings, list) and key_findings:
+            lines.append("Key findings:")
+            for item in key_findings[:6]:
+                lines.append(f"- {item}")
+
+        limitations = experiment_analysis.get("limitations", [])
+        if isinstance(limitations, list) and limitations:
+            lines.append("Limitations:")
+            for item in limitations[:6]:
+                lines.append(f"- {item}")
+
+        training_dynamics = experiment_analysis.get("training_dynamics")
+        if training_dynamics:
+            lines.append(f"Training dynamics: {training_dynamics}")
+
+        cleaned_summary = experiment_summary.strip()
+        if cleaned_summary:
+            lines.append("Markdown experiment summary:")
+            lines.append(cleaned_summary[:4000])
+
+        lines.append("=== END EXPERIMENT ANALYSIS SUMMARY ===")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_baseline_comparison_context(grounding: "GroundingPacket | None") -> str:
+        """Build context block from comparison_with_baselines analysis data."""
+        if not grounding or not grounding.comparison_with_baselines:
+            return ""
+        comp = grounding.comparison_with_baselines
+        lines = [
+            "=== BASELINE COMPARISON (from experiment analysis) ===",
+            "The following comparison data was extracted from actual experiment analysis.",
+            "Use these numbers for comparison tables and discussion.",
+            "",
+        ]
+        for method_name, metrics in comp.items():
+            if not isinstance(metrics, dict):
+                continue
+            tag = " [PROPOSED]" if method_name.lower() in ("our_method", "proposed", "ours") else ""
+            metric_strs = [f"{k}={v}" for k, v in metrics.items() if v is not None]
+            if metric_strs:
+                lines.append(f"  {method_name}{tag}: {', '.join(metric_strs)}")
+        lines.append("=== END BASELINE COMPARISON ===")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_grounding_status_context(grounding: "GroundingPacket | None") -> str:
+        """Build a brief context block informing the LLM about evidence completeness."""
+        if not grounding:
+            return ""
+        completeness_desc = {
+            "full": "FULL — complete experiment results are available. Use exact numbers.",
+            "partial": "PARTIAL — experiment ran but did not fully converge. Use available numbers with caveats.",
+            "quick_eval": "QUICK-EVAL ONLY — results are from a shortened evaluation run. "
+                          "Use these numbers but note they may not reflect full training.",
+            "none": "NONE — no experiment results available. Do NOT fabricate any numbers.",
+        }
+        desc = completeness_desc.get(grounding.result_completeness, "UNKNOWN")
+        lines = [
+            f"=== RESULT COMPLETENESS: {grounding.result_completeness.upper()} ===",
+            desc,
+        ]
+        if grounding.evidence_gaps:
+            lines.append("Evidence gaps:")
+            for gap in grounding.evidence_gaps:
+                lines.append(f"  - {gap}")
+        lines.append("=== END RESULT COMPLETENESS ===")
+        return "\n".join(lines)
+
     # ---- figure/table blocks ------------------------------------------------
+
+    def _verify_and_inject_tables(
+        self,
+        content: str,
+        grounding: GroundingPacket,
+        heading: str,
+    ) -> str:
+        """Verify Experiments section has correct tables; inject if missing.
+
+        If the LLM omitted the main results or ablation table, or built them
+        with wrong numbers, replace/inject the deterministic pre-built versions.
+        """
+        has_main_table = bool(re.search(
+            r'\\label\{tab:main_results\}', content
+        ))
+        has_ablation_table = bool(re.search(
+            r'\\label\{tab:ablation\}', content
+        ))
+
+        if not has_main_table and grounding.main_table_latex:
+            self.log(f"  {heading}: LLM omitted main results table, injecting pre-built")
+            # Find a good insertion point — after first mention of "main results"
+            # or after first paragraph
+            insert_match = re.search(
+                r'(?:main results|overall performance|comparison)',
+                content, re.IGNORECASE,
+            )
+            if insert_match:
+                # Insert after the paragraph containing the match
+                para_end = content.find('\n\n', insert_match.end())
+                if para_end == -1:
+                    para_end = len(content)
+                content = (
+                    content[:para_end]
+                    + "\n\n" + grounding.main_table_latex + "\n"
+                    + content[para_end:]
+                )
+            else:
+                # Append at end
+                content += "\n\n" + grounding.main_table_latex
+
+        if not has_ablation_table and grounding.ablation_table_latex:
+            self.log(f"  {heading}: LLM omitted ablation table, injecting pre-built")
+            insert_match = re.search(
+                r'(?:ablation|component analysis)',
+                content, re.IGNORECASE,
+            )
+            if insert_match:
+                para_end = content.find('\n\n', insert_match.end())
+                if para_end == -1:
+                    para_end = len(content)
+                content = (
+                    content[:para_end]
+                    + "\n\n" + grounding.ablation_table_latex + "\n"
+                    + content[para_end:]
+                )
+            else:
+                content += "\n\n" + grounding.ablation_table_latex
+
+        return content
 
     def _build_figure_blocks(self, blueprint: dict, figure_output: dict | None = None) -> dict[str, str]:
         """Pre-build LaTeX figure/table blocks to embed inline.
@@ -1038,8 +1689,25 @@ Every component listed above should appear in the ablation table.
             logger.warning("Title generation failed, using fallback: %s", e)
             return "Untitled Research Paper"
 
-    async def _generate_abstract(self, context: str) -> str:
-        prompt = f"Based on the following research context, write the abstract:\n\n{context}"
+    async def _generate_abstract(
+        self, context: str, grounding: GroundingPacket | None = None,
+    ) -> str:
+        number_binding = ""
+        if grounding and grounding.has_real_results and grounding.final_metrics:
+            metric_strs = [f"{k}={v}" for k, v in list(grounding.final_metrics.items())[:5]]
+            number_binding = (
+                "\n\nIMPORTANT — RESULT NUMBERS IN ABSTRACT:\n"
+                f"Real experiment metrics: {', '.join(metric_strs)}\n"
+                "You MUST mention at least the primary metric in the abstract. "
+                "Use the exact value from above. Do NOT fabricate different numbers."
+            )
+        elif grounding and not grounding.has_real_results:
+            number_binding = (
+                "\n\nIMPORTANT: No real experiment results are available. "
+                "Do NOT mention any specific accuracy/F1/performance numbers in the abstract. "
+                "Focus on the method and its design instead."
+            )
+        prompt = f"Based on the following research context, write the abstract:\n\n{context}{number_binding}"
         try:
             return ((await self.generate(ABSTRACT_SYSTEM_PROMPT, prompt)) or "").strip()
         except Exception as e:
@@ -1075,18 +1743,19 @@ Maintain consistent notation and terminology with any previously written section
 Output ONLY the LaTeX paragraphs for this section. Do not include \\section command."""
 
         # Use tool-augmented generation for key sections
-        if heading in self._TOOL_SECTIONS:
+        if self.config.should_use_writing_tools(heading):
             try:
                 tools = await self._build_writing_tools()
                 if tools is not None:
                     tool_prompt = (
                         prompt + "\n\nYou have access to search tools. "
                         "If you need to verify citations, find additional references, "
-                        "or look up recent results, use the tools before writing."
+                        "or look up recent results, use the tools before writing. "
+                        "Ground claims in retrieved evidence and actual experiment outputs."
                     )
                     content = (await self.generate_with_tools(
                         section_system, tool_prompt, tools,
-                        max_tool_rounds=10,
+                        max_tool_rounds=self.config.writing_tool_max_rounds,
                     ) or "").strip()
                     if not content:
                         self.log(f"  ReAct loop returned empty content for {heading}, retrying without tools")

@@ -6,13 +6,13 @@
 
 ## 一、项目概览
 
-NanoResearch 是一个自动化学术研究 pipeline，将研究流程拆解为 5 个阶段，每个阶段由专门的 AI Agent 负责执行：
+NanoResearch 当前已经收敛为一条**统一自动化科研流水线**：
 
-```
-研究主题 → 文献调研 → 实验规划 → 代码生成 → 图表生成 → 论文撰写
-```
+- **Unified 主干**：`IDEATION → PLANNING → SETUP → CODING → EXECUTION → ANALYSIS → FIGURE_GEN → WRITING → REVIEW`
 
-整个系统基于 OpenAI 兼容 API 驱动，支持断点续跑、多模型路由、多论文模板（arXiv / NeurIPS / ICML），约 2600 行 Python 代码。
+旧的标准模式 `IDEATION → PLANNING → EXPERIMENT → FIGURE_GEN → WRITING → REVIEW` 仍保留在代码中，用于兼容旧工作区，并把其中成熟的 quick-eval / 环境创建 / 迭代修复能力复用到统一主干。
+
+整个系统基于 OpenAI 兼容 API 驱动，支持断点续跑、多模型路由、多论文模板（arXiv / NeurIPS / ICML / NeurIPS 2025）和工作区导出。
 
 ---
 
@@ -25,15 +25,22 @@ nanoresearch/
 │   ├── __init__.py              # 版本号 (0.1.0)
 │   ├── cli.py                   # Typer CLI 命令定义
 │   ├── config.py                # 配置加载与管理
-│   ├── agents/                  # 5 个专业 AI Agent
+│   ├── agents/                  # Unified 主干 Agent + 旧标准兼容 Agent
 │   │   ├── base.py              # Agent 抽象基类
 │   │   ├── ideation.py          # 文献调研 Agent
 │   │   ├── planning.py          # 实验规划 Agent
-│   │   ├── experiment.py        # 代码生成 Agent
+│   │   ├── experiment.py        # 旧标准兼容层：代码生成 + quick-eval 闭环
+│   │   ├── setup.py             # Unified：资源准备
+│   │   ├── coding.py            # Unified：训练项目生成
+│   │   ├── execution.py         # Unified：本地/SLURM 执行与调试
+│   │   ├── analysis.py          # Unified：实验结果分析
 │   │   ├── figure_gen.py        # 图表生成 Agent
-│   │   └── writing.py           # 论文撰写 Agent
+│   │   ├── writing.py           # 论文撰写 Agent
+│   │   └── review.py            # 自动评审 + 修订
 │   ├── pipeline/                # 流水线编排与状态管理
-│   │   ├── orchestrator.py      # 主 pipeline 编排器
+│   │   ├── unified_orchestrator.py # 新默认统一入口
+│   │   ├── deep_orchestrator.py # Unified 主干实现
+│   │   ├── orchestrator.py      # 旧标准模式兼容编排器
 │   │   ├── state.py             # 有限状态机
 │   │   ├── workspace.py         # 工作空间与产物管理
 │   │   └── multi_model.py       # 多模型调度器 (OpenAI SDK)
@@ -183,23 +190,24 @@ nanoresearch export --workspace ~/.nanobot/workspace/research/{session_id} --out
 Pipeline 由一个有限状态机驱动，定义了 8 个状态和合法的状态转移：
 
 ```
-INIT → IDEATION → PLANNING → EXPERIMENT → FIGURE_GEN → WRITING → DONE
-  ↓        ↓          ↓          ↓            ↓           ↓
-FAILED   FAILED     FAILED     FAILED      FAILED      FAILED
+standard: INIT → IDEATION → PLANNING → EXPERIMENT → FIGURE_GEN → WRITING → REVIEW → DONE
+deep:     INIT → IDEATION → PLANNING → SETUP → CODING → EXECUTION → ANALYSIS → FIGURE_GEN → WRITING → REVIEW → DONE
+            ↓          ↓             ↓        ↓         ↓           ↓              ↓           ↓           ↓
+          FAILED     FAILED        FAILED   FAILED    FAILED      FAILED         FAILED      FAILED      FAILED
 ```
 
 `PipelineStateMachine` 确保只能按合法路径转移状态，防止非法跳转。
 
 ### 6.2 编排器 (Orchestrator)
 
-`PipelineOrchestrator` 是核心调度器，执行流程如下：
+`UnifiedPipelineOrchestrator`（新默认入口）与 `PipelineOrchestrator`（旧标准兼容入口）共享相同的检查点/重试框架。当前新的默认执行流程如下：
 
 ```python
 async def run(topic: str):
-    workspace = Workspace.create(session_id, topic)  # 创建工作空间
-    state_machine = PipelineStateMachine(INIT)
+    workspace = Workspace.create(session_id, topic, pipeline_mode="standard|deep")
+    state_machine = PipelineStateMachine(INIT, mode="standard|deep")
 
-    for stage in [IDEATION, PLANNING, EXPERIMENT, FIGURE_GEN, WRITING]:
+    for stage in processing_stages(mode):
         state_machine.transition(stage)
         workspace.start_stage(stage)
 
@@ -224,7 +232,7 @@ async def run(topic: str):
 - **错误注入**：重试时将上次错误作为上下文传递给 Agent
 - **产物注册**：每个阶段的输出文件记录 MD5 校验和
 
-### 6.3 五个阶段详解
+### 6.3 标准阶段与 Deep 扩展阶段详解
 
 #### Stage 1: IDEATION（文献调研）
 

@@ -31,7 +31,12 @@ GLOBAL_DATA_DIR = GLOBAL_CACHE_DIR / "data"
 class SetupAgent(BaseResearchAgent):
     """Searches for relevant code repos, clones them, and downloads required resources."""
 
-    stage = PipelineStage.EXPERIMENT  # reuse stage config for LLM calls
+    stage = PipelineStage.SETUP
+
+    @property
+    def stage_config(self):
+        """Reuse experiment-stage model routing for setup planning."""
+        return self.config.for_stage("experiment")
 
     async def run(self, **inputs: Any) -> dict[str, Any]:
         topic: str = inputs["topic"]
@@ -42,6 +47,10 @@ class SetupAgent(BaseResearchAgent):
 
         # Step 1: Search GitHub for relevant repos
         search_plan = await self._plan_search(topic, ideation_output, experiment_blueprint)
+        search_plan = self._augment_search_plan_with_blueprint_resources(
+            search_plan,
+            experiment_blueprint,
+        )
         self.log(f"Search plan: {json.dumps(search_plan, indent=2)[:500]}")
 
         # Step 2: Search and clone repos
@@ -56,9 +65,13 @@ class SetupAgent(BaseResearchAgent):
         GLOBAL_MODELS_DIR.mkdir(parents=True, exist_ok=True)
         GLOBAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-        resources = await self._download_resources(
-            search_plan, GLOBAL_DATA_DIR, GLOBAL_MODELS_DIR
-        )
+        if self.config.auto_download_resources:
+            resources = await self._download_resources(
+                search_plan, GLOBAL_DATA_DIR, GLOBAL_MODELS_DIR
+            )
+        else:
+            self.log("Automatic resource download disabled, skipping dataset/model fetch")
+            resources = []
 
         # Also create workspace-local symlinks for convenience
         data_dir = self.workspace.path / "data"
@@ -112,10 +125,48 @@ class SetupAgent(BaseResearchAgent):
             "downloaded_resources": verified_resources,
             "data_dir": str(GLOBAL_DATA_DIR),
             "models_dir": str(GLOBAL_MODELS_DIR),
+            "resource_download_enabled": self.config.auto_download_resources,
         }
 
         self.workspace.write_json("plans/setup_output.json", result)
         return result
+
+    @staticmethod
+    def _augment_search_plan_with_blueprint_resources(
+        search_plan: dict,
+        blueprint: dict,
+    ) -> dict:
+        """Backfill downloadable dataset entries directly from the blueprint."""
+        merged = dict(search_plan or {})
+        datasets = list(merged.get("datasets", []))
+        seen = {
+            str(entry.get("name", "")).strip().lower()
+            for entry in datasets
+            if isinstance(entry, dict)
+        }
+
+        for dataset in blueprint.get("datasets", []):
+            if not isinstance(dataset, dict):
+                continue
+            name = str(dataset.get("name", "")).strip()
+            if not name or name.lower() in seen:
+                continue
+            source_url = str(dataset.get("source_url", "")).strip()
+            if not source_url.startswith(("http://", "https://")):
+                continue
+            filename = source_url.split("/")[-1].split("?")[0] or f"{name.lower().replace(' ', '_')}.dat"
+            datasets.append(
+                {
+                    "name": name,
+                    "url": source_url,
+                    "filename": filename,
+                    "source": "blueprint",
+                }
+            )
+            seen.add(name.lower())
+
+        merged["datasets"] = datasets
+        return merged
 
     async def _plan_search(
         self, topic: str, ideation: dict, blueprint: dict

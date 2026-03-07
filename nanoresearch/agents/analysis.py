@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class AnalysisAgent(BaseResearchAgent):
     """Analyzes real experiment results and generates publication figures from actual data."""
 
-    stage = PipelineStage.FIGURE_GEN  # placeholder for base class
+    stage = PipelineStage.ANALYSIS
 
     @property
     def stage_config(self):
@@ -32,16 +32,32 @@ class AnalysisAgent(BaseResearchAgent):
 
         # Step 1: Analyze results
         analysis = await self._analyze_results(execution_output, experiment_blueprint)
+        if not isinstance(analysis, dict):
+            analysis = {}
+        analysis.setdefault("execution_output", execution_output)
         self.log(f"Analysis complete: {list(analysis.keys())}")
 
         # Step 2: Generate figures from real data
         figures = await self._generate_figures(analysis, experiment_blueprint)
         self.log(f"Generated {len(figures)} figures")
 
+        # Step 3: Write an experiment summary markdown for downstream writing/review
+        summary_markdown = self._render_experiment_summary_markdown(
+            analysis,
+            execution_output,
+            experiment_blueprint,
+        )
+        summary_path = self.workspace.write_text(
+            "drafts/experiment_summary.md",
+            summary_markdown,
+        )
+
         result = {
             "analysis": analysis,
             "figures": figures,
             "execution_output": execution_output,
+            "experiment_summary": summary_markdown,
+            "experiment_summary_path": str(summary_path),
         }
 
         self.workspace.write_json("plans/analysis_output.json", result)
@@ -139,6 +155,112 @@ IMPORTANT:
 
         result = await self.generate_json(system_prompt, user_prompt)
         return result if isinstance(result, dict) else {}
+
+    @staticmethod
+    def _render_experiment_summary_markdown(
+        analysis: dict,
+        execution_output: dict,
+        blueprint: dict,
+    ) -> str:
+        """Render a compact markdown summary of the executed experiment."""
+        lines = [
+            "# Experiment Summary",
+            "",
+            f"- Status: `{execution_output.get('final_status', 'UNKNOWN')}`",
+            f"- Method: `{blueprint.get('proposed_method', {}).get('name', 'Unknown')}`",
+            f"- Datasets: {', '.join(ds.get('name', '?') for ds in blueprint.get('datasets', []) if isinstance(ds, dict)) or 'N/A'}",
+            "",
+            "## Narrative",
+            analysis.get("summary", "No summary available."),
+            "",
+        ]
+
+        final_metrics = analysis.get("final_metrics", {})
+        if not isinstance(final_metrics, dict) or not final_metrics:
+            final_metrics = AnalysisAgent._extract_metric_snapshot(execution_output)
+        if isinstance(final_metrics, dict) and final_metrics:
+            lines.append("## Final Metrics")
+            for key, value in final_metrics.items():
+                lines.append(f"- `{key}`: {value}")
+            lines.append("")
+
+        key_findings = analysis.get("key_findings", [])
+        if isinstance(key_findings, list) and key_findings:
+            lines.append("## Key Findings")
+            for item in key_findings:
+                lines.append(f"- {item}")
+            lines.append("")
+
+        limitations = analysis.get("limitations", [])
+        if isinstance(limitations, list) and limitations:
+            lines.append("## Limitations")
+            for item in limitations:
+                lines.append(f"- {item}")
+            lines.append("")
+
+        dynamics = analysis.get("training_dynamics", "")
+        if dynamics:
+            lines.append("## Training Dynamics")
+            lines.append(str(dynamics))
+            lines.append("")
+
+        comparison = analysis.get("comparison_with_baselines", {})
+        if isinstance(comparison, dict) and comparison:
+            lines.append("## Comparison with Baselines")
+            lines.append("")
+            # Build a markdown table
+            # Collect all metric names
+            all_metrics: list[str] = []
+            seen_m: set[str] = set()
+            for method_metrics in comparison.values():
+                if isinstance(method_metrics, dict):
+                    for k in method_metrics:
+                        if k not in seen_m:
+                            all_metrics.append(k)
+                            seen_m.add(k)
+            if all_metrics:
+                lines.append("| Method | " + " | ".join(all_metrics) + " |")
+                lines.append("|" + "|".join(["---"] * (len(all_metrics) + 1)) + "|")
+                for method_name, method_metrics in comparison.items():
+                    if not isinstance(method_metrics, dict):
+                        continue
+                    cells = [str(method_metrics.get(m, "--")) for m in all_metrics]
+                    lines.append(f"| {method_name} | " + " | ".join(cells) + " |")
+                lines.append("")
+
+        ablation = analysis.get("ablation_results", [])
+        if isinstance(ablation, list) and ablation:
+            lines.append("## Ablation Results")
+            for entry in ablation:
+                if not isinstance(entry, dict):
+                    continue
+                variant = entry.get("variant_name", "?")
+                metric_strs = []
+                for m in entry.get("metrics", []):
+                    if isinstance(m, dict):
+                        metric_strs.append(f"{m.get('metric_name', '?')}={m.get('value', '?')}")
+                lines.append(f"- {variant}: {', '.join(metric_strs)}")
+            lines.append("")
+
+        return "\n".join(lines).rstrip() + "\n"
+
+    @staticmethod
+    def _extract_metric_snapshot(execution_output: dict) -> dict[str, Any]:
+        """Extract a flat metric snapshot from raw execution artifacts."""
+        for candidate in (
+            execution_output.get("metrics", {}),
+            execution_output.get("parsed_metrics", {}),
+        ):
+            if not isinstance(candidate, dict):
+                continue
+            flat_metrics = {
+                key: value
+                for key, value in candidate.items()
+                if isinstance(value, (int, float, str, bool))
+            }
+            if flat_metrics:
+                return flat_metrics
+        return {}
 
     async def _generate_figures(
         self, analysis: dict, blueprint: dict

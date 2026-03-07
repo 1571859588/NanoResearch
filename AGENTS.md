@@ -1,27 +1,30 @@
 # NanoResearch Agent Architecture
 
-NanoResearch 的核心是 5 个串行执行的 Agent，每个 Agent 负责科研流水线中的一个阶段。所有 Agent 继承自统一的基类，通过编排器（Orchestrator）协调执行，支持断点恢复和自动重试。
+NanoResearch 当前的主入口已经收敛为一条**统一主流水线**：
+
+- **Unified 主干**：`IDEATION → PLANNING → SETUP → CODING → EXECUTION → ANALYSIS → FIGURE_GEN → WRITING → REVIEW`
+
+旧的**标准模式** `IDEATION → PLANNING → EXPERIMENT → FIGURE_GEN → WRITING → REVIEW` 仍保留在代码中，仅用于兼容旧 workspace / 复用其中的快速实验能力，不再作为新的默认主架构。
+
+整个系统基于统一的 `BaseResearchAgent`、`Workspace` 与 `PipelineStateMachine`，支持断点恢复、自动重试、artifact 注册、多模型路由，以及按 profile 切换本地/集群执行策略。
 
 ---
 
 ## 系统架构
 
-```
-                    ┌─────────────────────────────────────────────┐
-                    │           PipelineOrchestrator              │
-                    │  调度 · 重试 · 检查点 · 状态机 · Resume     │
-                    └──────────────────┬──────────────────────────┘
+``` 
+                   ┌──────────────────────────────────────────────┐
+                   │                Orchestrators                 │
+                   │ standard: orchestrator.py                    │
+                   │ deep:     deep_orchestrator.py               │
+                   └───────────────────┬──────────────────────────┘
                                        │
-        ┌──────────┬──────────┬────────┴───────┬──────────┐
-        ▼          ▼          ▼                ▼          ▼
-   ┌─────────┐ ┌────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐
-   │Ideation │ │Planning│ │Experiment│ │Figure Gen│ │ Writing │
-   │  Agent  │ │ Agent  │ │  Agent   │ │  Agent   │ │  Agent  │
-   └────┬────┘ └───┬────┘ └────┬─────┘ └────┬─────┘ └────┬────┘
-        │          │           │             │            │
-        ▼          ▼           ▼             ▼            ▼
-    ideation   experiment   code/        figures/     paper.tex
-    _output.json blueprint.json *.py     *.png *.pdf   paper.pdf
+       ┌───────────────────────────────┼────────────────────────────────┐
+       ▼                               ▼                                ▼
+  Standard pipeline               Shared agents                    Deep-only stages
+  IDEATION → PLANNING →           IDEATION / PLANNING /           SETUP / CODING /
+  EXPERIMENT → FIGURE_GEN →       FIGURE_GEN / WRITING / REVIEW   EXECUTION / ANALYSIS
+  WRITING → REVIEW
 ```
 
 ### 数据流
@@ -35,14 +38,24 @@ IdeationAgent ──→ ideation_output (papers, gaps, hypotheses)
   ▼
 PlanningAgent ──→ experiment_blueprint (datasets, baselines, metrics)
   │
-  ▼
-ExperimentAgent ─→ code/ (12+ runnable Python files)
+  ├─ 兼容层: ExperimentAgent ─→ code/ + quick-eval results
+  │           └→ 其环境创建 / quick-eval / 迭代修复能力被复用到 Unified 主干
+  │
+  └─ Unified 主干:
+      SetupAgent ─────→ plans/setup_output.json
+      CodingAgent ────→ experiment/ + plans/coding_output.json
+      ExecutionAgent ─→ plans/execution_output.json
+      AnalysisAgent ──→ plans/analysis_output.json
+                      └→ figures (real-result charts)
   │
   ▼
-FigureAgent ────→ figures/ (3 figures: architecture + results + ablation)
+FigureAgent ────→ drafts/figure_output.json + figures/*.png/*.pdf
   │
   ▼
-WritingAgent ───→ drafts/paper.tex + paper.pdf
+WritingAgent ───→ drafts/paper.tex + drafts/paper.pdf
+  │
+  ▼
+ReviewAgent ────→ drafts/review_output.json + revised paper.tex
 ```
 
 ---
@@ -295,13 +308,17 @@ LLM 输出 JSON 时常包含 `\cite{}`, `\textbf{}` 等 LaTeX 命令。`\c`, `\t
 
 ## 编排器：PipelineOrchestrator
 
-**文件**: `nanoresearch/pipeline/orchestrator.py`
+**文件**:
+
+- `nanoresearch/pipeline/unified_orchestrator.py` — 新默认入口（基于 Deep 主干）
+- `nanoresearch/pipeline/deep_orchestrator.py` — Unified 主干实现
+- `nanoresearch/pipeline/orchestrator.py` — 旧标准模式兼容编排器
 
 ### 核心功能
 
 | 功能 | 实现 |
 |------|------|
-| 阶段调度 | 按 `IDEATION → PLANNING → EXPERIMENT → FIGURE_GEN → WRITING` 顺序执行 |
+| 阶段调度 | 新入口默认按 `IDEATION → PLANNING → SETUP → CODING → EXECUTION → ANALYSIS → FIGURE_GEN → WRITING → REVIEW` 执行；旧标准模式仅兼容历史 workspace |
 | 检查点恢复 | 已完成的阶段自动跳过，从上次失败的阶段继续 |
 | 自动重试 | 每阶段最多重试 3 次，每次注入上次的错误信息帮助 LLM 自我修正 |
 | 状态机 | 严格的前向状态转移，防止非法跳转 (state.py) |
@@ -314,9 +331,10 @@ LLM 输出 JSON 时常包含 `\cite{}`, `\textbf{}` 等 LaTeX 命令。`\c`, `\t
 |------|----------|--------|
 | IDEATION | `topic` (str) | `ideation_output` |
 | PLANNING | `ideation_output` | `experiment_blueprint` |
-| EXPERIMENT | `experiment_blueprint` | `experiment_output` (includes `experiment_results`, `experiment_status`) |
+| EXPERIMENT / SETUP / CODING / EXECUTION / ANALYSIS | 依赖前序阶段产物自动路由 | `experiment_output` 或 `*_output` |
 | FIGURE_GEN | `experiment_blueprint` + `experiment_results` + `experiment_status` | `figure_output` |
 | WRITING | ideation + blueprint + figures + `experiment_results` + `experiment_status` | `writing_output` |
+| REVIEW | `paper_tex` + ideation + blueprint | `review_output` |
 
 ---
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 import json
 import logging
 import os
@@ -12,6 +13,22 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
+
+
+class ExecutionProfile(str, Enum):
+    """High-level execution behavior presets for the unified pipeline."""
+
+    FAST_DRAFT = "fast_draft"
+    LOCAL_QUICK = "local_quick"
+    CLUSTER_FULL = "cluster_full"
+
+
+class WritingMode(str, Enum):
+    """How aggressively the writing stage should use tools."""
+
+    DIRECT = "direct"
+    HYBRID = "hybrid"
+    REACT = "react"
 
 
 class StageModelConfig(BaseModel):
@@ -114,6 +131,12 @@ class ResearchConfig(BaseModel):
     template_format: str = "neurips2025"
     max_retries: int = 2
     quick_eval_timeout: int = 1200  # seconds for quick-eval execution (20 min)
+    execution_profile: ExecutionProfile = ExecutionProfile.LOCAL_QUICK
+    writing_mode: WritingMode = WritingMode.HYBRID
+    writing_tool_max_rounds: int = 10
+    auto_create_env: bool = True
+    auto_download_resources: bool = True
+    local_execution_timeout: int = 1800
 
     # Use an existing conda env instead of creating a new venv.
     # When set, experiment agent skips venv creation and uses this env's Python.
@@ -215,12 +238,30 @@ class ResearchConfig(BaseModel):
             raise ValueError(f"Unknown stage: {stage_name}. Valid: {list(mapping)}")
         return mapping[stage_name]
 
+    def prefers_cluster_execution(self) -> bool:
+        """Whether the unified pipeline should prefer SLURM/cluster execution."""
+        return self.execution_profile == ExecutionProfile.CLUSTER_FULL or bool(
+            self.cluster and self.cluster.get("enabled")
+        )
+
+    def should_use_writing_tools(self, heading: str) -> bool:
+        """Decide whether a section should use tool-augmented writing."""
+        if self.writing_mode == WritingMode.DIRECT:
+            return False
+        if self.writing_mode == WritingMode.REACT:
+            return True
+
+        hybrid_sections = {"Introduction", "Related Work", "Method", "Experiments", "Results"}
+        if self.execution_profile == ExecutionProfile.FAST_DRAFT:
+            hybrid_sections = {"Introduction", "Related Work", "Method"}
+        return heading.strip() in hybrid_sections
+
     def snapshot(self) -> dict:
         """Return a JSON-serializable snapshot for manifest storage.
 
         Strips all API keys (global and per-stage) to prevent accidental leaks.
         """
-        d = self.model_dump()
+        d = self.model_dump(mode="json")
         d.pop("api_key", None)  # don't persist global API key
         # Also strip per-stage api_key overrides
         for key, val in d.items():

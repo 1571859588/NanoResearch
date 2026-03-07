@@ -3,7 +3,7 @@
 import pytest
 
 from nanoresearch.pipeline.state import InvalidTransitionError, PipelineStateMachine
-from nanoresearch.schemas.manifest import PipelineStage
+from nanoresearch.schemas.manifest import PipelineMode, PipelineStage
 
 
 class TestPipelineStateMachine:
@@ -116,6 +116,46 @@ class TestPipelineStateMachine:
         assert stages[3] == PipelineStage.FIGURE_GEN
         assert stages[4] == PipelineStage.WRITING
         assert stages[-1] == PipelineStage.REVIEW
+
+    def test_deep_processing_stages(self):
+        stages = PipelineStateMachine.processing_stages(PipelineMode.DEEP)
+        assert len(stages) == 9
+        assert stages[0] == PipelineStage.IDEATION
+        assert stages[2] == PipelineStage.SETUP
+        assert stages[3] == PipelineStage.CODING
+        assert stages[4] == PipelineStage.EXECUTION
+        assert stages[5] == PipelineStage.ANALYSIS
+        assert stages[-1] == PipelineStage.REVIEW
+
+    def test_deep_happy_path(self):
+        sm = PipelineStateMachine(mode=PipelineMode.DEEP)
+        sm.transition(PipelineStage.IDEATION)
+        sm.transition(PipelineStage.PLANNING)
+        sm.transition(PipelineStage.SETUP)
+        sm.transition(PipelineStage.CODING)
+        sm.transition(PipelineStage.EXECUTION)
+        sm.transition(PipelineStage.ANALYSIS)
+        sm.transition(PipelineStage.FIGURE_GEN)
+        sm.transition(PipelineStage.WRITING)
+        sm.transition(PipelineStage.REVIEW)
+        sm.transition(PipelineStage.DONE)
+        assert sm.current == PipelineStage.DONE
+
+    def test_deep_next_stage(self):
+        assert (
+            PipelineStateMachine.next_stage(
+                PipelineStage.PLANNING,
+                PipelineMode.DEEP,
+            )
+            == PipelineStage.SETUP
+        )
+        assert (
+            PipelineStateMachine.next_stage(
+                PipelineStage.ANALYSIS,
+                PipelineMode.DEEP,
+            )
+            == PipelineStage.FIGURE_GEN
+        )
 
     def test_can_transition(self):
         sm = PipelineStateMachine()

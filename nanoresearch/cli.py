@@ -35,10 +35,11 @@ from rich.panel import Panel
 from rich.table import Table
 
 from nanoresearch import __version__
-from nanoresearch.config import ResearchConfig
+from nanoresearch.config import ExecutionProfile, ResearchConfig
 from nanoresearch.pipeline.orchestrator import PipelineOrchestrator
+from nanoresearch.pipeline.unified_orchestrator import UnifiedPipelineOrchestrator
 from nanoresearch.pipeline.workspace import Workspace
-from nanoresearch.schemas.manifest import PipelineStage
+from nanoresearch.schemas.manifest import PipelineMode, PipelineStage
 
 app = typer.Typer(
     name="nanoresearch",
@@ -125,10 +126,15 @@ def run(
     topic: str = typer.Option(..., "--topic", "-t", help="Research topic"),
     format: str = typer.Option(None, "--format", "-f", help="Paper format (auto-discovered from templates directory)"),
     config_path: Path = typer.Option(None, "--config", "-c", help="Path to config file"),
+    profile: ExecutionProfile | None = typer.Option(
+        None,
+        "--profile",
+        help="Unified execution profile",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Validate config and exit without running"),
 ) -> None:
-    """Run the full research pipeline from topic to paper draft."""
+    """Run the unified research pipeline from topic to paper draft."""
     _setup_logging(verbose)
 
     # Validate topic
@@ -138,6 +144,8 @@ def run(
     topic = topic.strip()
 
     config = _load_config_safe(config_path)
+    if profile is not None:
+        config.execution_profile = profile
 
     # Only override template_format if user explicitly passed --format
     if format is not None:
@@ -155,6 +163,8 @@ def run(
             f"[bold]Base URL:[/bold] {config.base_url}\n"
             f"[bold]Ideation model:[/bold] {config.ideation.model}\n"
             f"[bold]Writing model:[/bold] {config.writing.model}\n"
+            f"[bold]Execution profile:[/bold] {config.execution_profile.value}\n"
+            f"[bold]Writing mode:[/bold] {config.writing_mode.value}\n"
             f"[bold]Max retries:[/bold] {config.max_retries}\n"
             f"\n[green]Configuration is valid.[/green]",
             title="Dry Run",
@@ -162,9 +172,15 @@ def run(
         ))
         return
 
-    workspace = Workspace.create(topic=topic, config_snapshot=config.snapshot())
+    workspace = Workspace.create(
+        topic=topic,
+        config_snapshot=config.snapshot(),
+        pipeline_mode=PipelineMode.DEEP,
+    )
     console.print(Panel(
         f"[bold]Topic:[/bold] {topic}\n"
+        f"[bold]Pipeline:[/bold] Unified deep backbone\n"
+        f"[bold]Profile:[/bold] {config.execution_profile.value}\n"
         f"[bold]Session:[/bold] {workspace.manifest.session_id}\n"
         f"[bold]Workspace:[/bold] {workspace.path}\n"
         f"[bold]Format:[/bold] {format}",
@@ -172,14 +188,9 @@ def run(
         border_style="blue",
     ))
 
-    def _progress(stage: str, status: str, message: str) -> None:
-        icons = {"started": "[cyan]>>>[/cyan]", "completed": "[green]OK[/green]",
-                 "skipped": "[dim]--[/dim]", "retrying": "[yellow]!![/yellow]"}
-        console.print(f"  {icons.get(status, '  ')} {message}")
-
-    orchestrator = PipelineOrchestrator(workspace, config, progress_callback=_progress)
+    orchestrator = UnifiedPipelineOrchestrator(workspace, config)
     try:
-        result = asyncio.run(_run_pipeline(orchestrator, topic))
+        result = asyncio.run(_run_deep_pipeline(orchestrator, topic))
         _print_result(result, workspace)
     except Exception as e:
         console.print(f"[red]Pipeline failed:[/red] {e}")
@@ -239,15 +250,11 @@ def resume(
                  "skipped": "[dim]--[/dim]", "retrying": "[yellow]!![/yellow]"}
         console.print(f"  {icons.get(status, '  ')} {message}")
 
-    # Detect deep pipeline: check if SETUP/CODING/EXECUTION stages exist
-    is_deep = any(
-        s in manifest.stages for s in ("SETUP", "CODING", "EXECUTION")
-    )
+    is_deep = manifest.pipeline_mode == PipelineMode.DEEP
 
     if is_deep:
-        from nanoresearch.pipeline.deep_orchestrator import DeepPipelineOrchestrator
-        console.print("  [magenta]Detected DEEP pipeline — using DeepPipelineOrchestrator[/magenta]")
-        orchestrator = DeepPipelineOrchestrator(ws, config)
+        console.print("  [magenta]Detected unified/deep workspace — using UnifiedPipelineOrchestrator[/magenta]")
+        orchestrator = UnifiedPipelineOrchestrator(ws, config)
         try:
             result = asyncio.run(_run_deep_pipeline(orchestrator, manifest.topic))
             _print_result(result, ws)
@@ -300,6 +307,9 @@ def status(
 
     console.print(table)
     console.print(f"\n[bold]Topic:[/bold] {manifest.topic}")
+    console.print(f"[bold]Mode:[/bold] {manifest.pipeline_mode.value}")
+    execution_profile = manifest.config_snapshot.get("execution_profile", "?")
+    console.print(f"[bold]Profile:[/bold] {execution_profile}")
     console.print(f"[bold]Current Stage:[/bold] {manifest.current_stage.value}")
     console.print(f"[bold]Artifacts:[/bold] {len(manifest.artifacts)}")
     for art in manifest.artifacts:
@@ -413,6 +423,10 @@ def show_config(
     table.add_row("Global Timeout", f"{config.timeout}s")
     table.add_row("Max Retries", str(config.max_retries))
     table.add_row("Template Format", config.template_format)
+    table.add_row("Execution Profile", config.execution_profile.value)
+    table.add_row("Writing Mode", config.writing_mode.value)
+    table.add_row("Auto Create Env", str(config.auto_create_env))
+    table.add_row("Auto Download Resources", str(config.auto_download_resources))
 
     console.print(table)
 
@@ -480,29 +494,40 @@ def deep(
     topic: str = typer.Option(..., "--topic", "-t", help="Research topic"),
     format: str = typer.Option("neurips2025", "--format", "-f", help="Paper format"),
     config_path: Path = typer.Option(None, "--config", "-c", help="Path to config file"),
+    profile: ExecutionProfile | None = typer.Option(
+        None,
+        "--profile",
+        help="Unified execution profile",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Run the DEEP research pipeline: search code, run real experiments on GPU, write paper with real results."""
+    """Compatibility alias for the unified deep-backbone pipeline."""
     _setup_logging(verbose)
 
-    from nanoresearch.pipeline.deep_orchestrator import DeepPipelineOrchestrator
-
+    console.print("[yellow]`deep` is now a compatibility alias of `run`.[/yellow]")
     config = _load_config_safe(config_path)
     config.template_format = format
+    if profile is not None:
+        config.execution_profile = profile
 
-    workspace = Workspace.create(topic=topic, config_snapshot=config.snapshot())
+    workspace = Workspace.create(
+        topic=topic,
+        config_snapshot=config.snapshot(),
+        pipeline_mode=PipelineMode.DEEP,
+    )
     console.print(Panel(
         f"[bold]Topic:[/bold] {topic}\n"
-        f"[bold]Mode:[/bold] DEEP (real experiments)\n"
+        f"[bold]Mode:[/bold] Unified deep backbone\n"
+        f"[bold]Profile:[/bold] {config.execution_profile.value}\n"
         f"[bold]Session:[/bold] {workspace.manifest.session_id}\n"
         f"[bold]Workspace:[/bold] {workspace.path}\n"
         f"[bold]Format:[/bold] {format}\n\n"
-        f"Pipeline: IDEATION → PLANNING → SETUP → CODING → EXECUTION → ANALYSIS → WRITING",
+        f"Pipeline: IDEATION → PLANNING → SETUP → CODING → EXECUTION → ANALYSIS → FIGURE_GEN → WRITING → REVIEW",
         title="NanoResearch Deep Mode",
         border_style="magenta",
     ))
 
-    orchestrator = DeepPipelineOrchestrator(workspace, config)
+    orchestrator = UnifiedPipelineOrchestrator(workspace, config)
     try:
         result = asyncio.run(_run_deep_pipeline(orchestrator, topic))
         _print_result(result, workspace)
@@ -531,6 +556,10 @@ def inspect(
         "ideation": "papers/ideation_output.json",
         "planning": "plans/experiment_blueprint.json",
         "experiment": "logs/experiment_output.json",
+        "setup": "plans/setup_output.json",
+        "coding": "plans/coding_output.json",
+        "execution": "plans/execution_output.json",
+        "analysis": "plans/analysis_output.json",
         "figure_gen": "drafts/figure_output.json",
         "writing": "drafts/paper_skeleton.json",
         "review": "drafts/review_output.json",

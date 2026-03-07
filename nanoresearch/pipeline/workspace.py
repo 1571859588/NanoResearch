@@ -14,9 +14,12 @@ from pathlib import Path
 
 from nanoresearch.schemas.manifest import (
     ArtifactRecord,
+    DEEP_ONLY_STAGES,
+    PipelineMode,
     PipelineStage,
     StageRecord,
     WorkspaceManifest,
+    processing_stages_for_mode,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,7 @@ class Workspace:
         config_snapshot: dict | None = None,
         root: Path = _DEFAULT_ROOT,
         session_id: str | None = None,
+        pipeline_mode: PipelineMode = PipelineMode.STANDARD,
     ) -> "Workspace":
         sid = session_id or uuid.uuid4().hex[:12]
         ws_path = root / sid
@@ -51,14 +55,19 @@ class Workspace:
         for d in WORKSPACE_DIRS:
             (ws_path / d).mkdir(exist_ok=True)
 
+        relevant_stages = [
+            PipelineStage.INIT,
+            *processing_stages_for_mode(pipeline_mode),
+        ]
+
         manifest = WorkspaceManifest(
             session_id=sid,
             topic=topic,
+            pipeline_mode=pipeline_mode,
             current_stage=PipelineStage.INIT,
             stages={
                 stage.value: StageRecord(stage=stage)
-                for stage in PipelineStage
-                if stage not in (PipelineStage.DONE, PipelineStage.FAILED)
+                for stage in relevant_stages
             },
             config_snapshot=config_snapshot or {},
         )
@@ -96,8 +105,63 @@ class Workspace:
             raise RuntimeError(
                 f"Manifest file contains invalid JSON: {exc}"
             ) from exc
-        self._manifest_cache = WorkspaceManifest.model_validate(data)
+        data, normalized = self._normalize_manifest_data(data)
+        manifest = WorkspaceManifest.model_validate(data)
+        self._manifest_cache = manifest
+        if normalized:
+            self._write_manifest(manifest)
         return self._manifest_cache
+
+    @staticmethod
+    def _normalize_manifest_data(data: dict) -> tuple[dict, bool]:
+        """Repair legacy manifests in-memory before validation."""
+
+        if not isinstance(data, dict):
+            return data, False
+
+        normalized = False
+        stages = data.get("stages")
+        if not isinstance(stages, dict):
+            return data, False
+
+        deep_stage_names = {stage.value for stage in DEEP_ONLY_STAGES}
+        inferred_deep = False
+        current_stage = str(data.get("current_stage", ""))
+
+        for stage_key, record in stages.items():
+            try:
+                stage_enum = PipelineStage(stage_key)
+            except ValueError:
+                continue
+
+            if isinstance(record, dict):
+                if record.get("stage") != stage_key:
+                    record["stage"] = stage_key
+                    normalized = True
+
+                status = str(record.get("status", "pending"))
+                if (
+                    stage_key in deep_stage_names
+                    and (
+                        status != "pending"
+                        or bool(record.get("output_path"))
+                        or bool(record.get("error_message"))
+                    )
+                ):
+                    inferred_deep = True
+            elif stage_key in deep_stage_names:
+                inferred_deep = True
+
+            if current_stage == stage_enum.value and stage_enum in DEEP_ONLY_STAGES:
+                inferred_deep = True
+
+        if "pipeline_mode" not in data:
+            data["pipeline_mode"] = (
+                PipelineMode.DEEP.value if inferred_deep else PipelineMode.STANDARD.value
+            )
+            normalized = True
+
+        return data, normalized
 
     def _write_manifest(self, m: WorkspaceManifest) -> None:
         """Atomic write: write to temp file then rename to avoid corruption."""

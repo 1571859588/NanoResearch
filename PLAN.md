@@ -8,7 +8,11 @@
 
 ### 核心理念
 
-将科研流程拆分为 5 个独立阶段，每个阶段由一个专用 Agent 完成，通过一条单向流水线串联：
+当前路线图已经收敛为一条可恢复的统一主流水线：
+
+- **Unified 主干**：`IDEATION → PLANNING → SETUP → CODING → EXECUTION → ANALYSIS → FIGURE_GEN → WRITING → REVIEW`
+
+旧的标准模式 `IDEATION → PLANNING → EXPERIMENT → FIGURE_GEN → WRITING → REVIEW` 保留为兼容层，用来承接历史 workspace，并把其中成熟的 quick-eval / 环境创建 / 迭代修复逻辑复用回统一主干。
 
 ```
 Topic (用户输入)
@@ -51,15 +55,22 @@ nanoresearch/
 │   ├── __main__.py               # python -m nanoresearch 入口
 │   ├── cli.py                    # CLI 命令 (run, resume, status, list, export)
 │   ├── config.py                 # 全局配置 + 每阶段模型路由
-│   ├── agents/                   # 5 个 Agent 实现
+│   ├── agents/                   # Unified 主干 Agent + 旧标准兼容 Agent
 │   │   ├── base.py              # BaseResearchAgent 抽象基类
 │   │   ├── ideation.py          # 文献调研 + 假设生成
 │   │   ├── planning.py          # 实验方案设计
-│   │   ├── experiment.py        # 代码项目生成 (两阶段)
+│   │   ├── experiment.py        # 旧标准兼容层：代码项目生成 + quick-eval
+│   │   ├── setup.py             # Unified：资源准备
+│   │   ├── coding.py            # Unified：训练项目生成
+│   │   ├── execution.py         # Unified：执行、自动建环境与调试
+│   │   ├── analysis.py          # Unified：结果分析
 │   │   ├── figure_gen.py        # AI 配图生成
-│   │   └── writing.py           # 论文撰写
+│   │   ├── writing.py           # 论文撰写
+│   │   └── review.py            # 自动评审与修订
 │   ├── pipeline/                 # 流水线基础设施
-│   │   ├── orchestrator.py      # 编排器：调度 + 重试 + 检查点
+│   │   ├── unified_orchestrator.py # 新默认统一入口
+│   │   ├── deep_orchestrator.py # Unified 主干实现
+│   │   ├── orchestrator.py      # 旧标准模式兼容编排器
 │   │   ├── state.py             # 状态机
 │   │   ├── workspace.py         # 工作区目录 + manifest 管理
 │   │   └── multi_model.py       # OpenAI API 调度器
@@ -195,8 +206,10 @@ class PipelineStateMachine:
     def fail() -> PipelineStage           # 任意非终态 → FAILED
 
     @staticmethod
-    def processing_stages() -> list       # 返回 5 个工作阶段的有序列表
-    def next_stage(current) -> PipelineStage | None
+    def processing_stages(mode="standard") -> list
+        # standard: 6 个工作阶段
+        # deep: 9 个工作阶段
+    def next_stage(current, mode="standard") -> PipelineStage | None
 ```
 
 #### `pipeline/workspace.py` — 工作区管理
@@ -298,7 +311,7 @@ class BaseResearchAgent(ABC):
 
 ---
 
-### 第 4 层：5 个 Agent 实现 (`agents/`)
+### 第 4 层：标准 Agent + Deep 扩展阶段 (`agents/`)
 
 #### Agent 1: IdeationAgent — 文献调研
 
@@ -412,27 +425,33 @@ Phase 2 每个文件都看到完整契约，避免跨文件不一致。
 
 ---
 
-### 第 5 层：编排器 (`pipeline/orchestrator.py`)
+### 第 5 层：编排器 (`pipeline/orchestrator.py` / `pipeline/deep_orchestrator.py`)
 
 ```python
 class PipelineOrchestrator:
     def __init__(self, workspace, config):
-        # 创建 5 个 Agent 实例
+        # 旧标准兼容模式：6 个阶段
         self._agents = {
             IDEATION: IdeationAgent(workspace, config),
             PLANNING: PlanningAgent(workspace, config),
             EXPERIMENT: ExperimentAgent(workspace, config),
             FIGURE_GEN: FigureAgent(workspace, config),
             WRITING: WritingAgent(workspace, config),
+            REVIEW: ReviewAgent(workspace, config),
         }
 
     async def run(topic) -> dict:
         results = {}
-        for stage in [IDEATION, PLANNING, EXPERIMENT, FIGURE_GEN, WRITING]:
+        for stage in [IDEATION, PLANNING, EXPERIMENT, FIGURE_GEN, WRITING, REVIEW]:
             if already_completed(stage):
                 results.update(load_previous_output(stage))  # Resume 支持
                 continue
             result = await _run_stage_with_retry(stage, topic, results)
+
+class UnifiedPipelineOrchestrator:
+    # 新默认统一主干：IDEATION → PLANNING → SETUP → CODING → EXECUTION
+    #                → ANALYSIS → FIGURE_GEN → WRITING → REVIEW
+    ...
             results.update(result)
         mark_DONE()
 ```
@@ -481,7 +500,7 @@ WritingAgent 调用 `compile_pdf`。
 
 ### 第 7 层：CLI (`cli.py`)
 
-基于 Typer + Rich，5 个命令：
+基于 Typer + Rich，当前默认命令走 Unified 主干；旧标准模式只保留给兼容恢复：
 
 ```bash
 # 从主题运行完整流水线

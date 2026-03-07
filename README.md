@@ -32,13 +32,40 @@ Give NanoResearch a research topic, and it will:
 
 1. **Ideation** — Search arXiv + Semantic Scholar, identify research gaps, generate hypotheses
 2. **Planning** — Design a complete experiment blueprint (datasets, baselines, metrics, ablations)
-3. **Experiment** — Generate a runnable code project (12+ files with model, trainer, evaluation)
-4. **Figures** — Create architecture diagrams (Gemini AI) + data visualization charts (LLM-generated code)
-5. **Writing** — Write a full LaTeX paper section-by-section, compile to PDF
+3. **Setup** — Search repos, clone references, and optionally auto-download datasets/models
+4. **Coding** — Generate a runnable experiment project plus training scripts
+5. **Execution** — Auto-create environments, install requirements, run locally or on SLURM
+6. **Analysis** — Parse real outputs, extract metrics, and prepare grounded evidence
+7. **Figures** — Create architecture diagrams (Gemini AI) + data visualization charts (LLM-generated code)
+8. **Writing** — Write a full LaTeX paper section-by-section, with optional ReAct tool use
 
 ```
-Standard: Topic → IDEATION → PLANNING → EXPERIMENT → FIGURE_GEN → WRITING → REVIEW → paper.pdf
-Deep:     Topic → IDEATION → PLANNING → SETUP → CODING → EXECUTION → ANALYSIS → FIGURE_GEN → WRITING → REVIEW → paper.pdf
+Unified: Topic → IDEATION → PLANNING → SETUP → CODING → EXECUTION → ANALYSIS → FIGURE_GEN → WRITING → REVIEW → paper.pdf
+```
+
+`nanoresearch run` now uses the unified deep backbone by default. The legacy `deep` command remains as a compatibility alias, and the old standard orchestrator is kept only for resuming older workspaces.
+
+## Execution Profiles
+
+The unified pipeline supports three high-level profiles:
+
+- `fast_draft` — lighter-weight writing/research assistance, useful for rapid draft generation
+- `local_quick` — default profile; prefers local execution with automatic venv creation and dependency installation
+- `cluster_full` — prefers SLURM/cluster execution, with automatic fallback to local mode if cluster tools are unavailable
+
+Relevant config keys:
+
+```json
+{
+  "research": {
+    "execution_profile": "local_quick",
+    "writing_mode": "hybrid",
+    "writing_tool_max_rounds": 10,
+    "auto_create_env": true,
+    "auto_download_resources": true,
+    "local_execution_timeout": 1800
+  }
+}
 ```
 
 ## Quick Start
@@ -176,8 +203,9 @@ nanoresearch/
 │   │   ├── preflight.py     # Static preflight checks on experiment code
 │   │   └── checkers.py      # LaTeX consistency + math formula validators
 │   ├── pipeline/             # Infrastructure
-│   │   ├── orchestrator.py  # Standard 6-stage pipeline (retry + checkpoint)
-│   │   ├── deep_orchestrator.py  # Deep 9-stage pipeline (SLURM execution)
+│   │   ├── unified_orchestrator.py  # Default unified entrypoint
+│   │   ├── deep_orchestrator.py  # Unified deep backbone implementation
+│   │   ├── orchestrator.py  # Legacy standard compatibility pipeline
 │   │   ├── state.py         # Pipeline state machine
 │   │   ├── workspace.py     # Workspace directory + manifest management
 │   │   └── multi_model.py   # OpenAI + Gemini API dispatcher

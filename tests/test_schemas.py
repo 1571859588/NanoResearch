@@ -16,6 +16,7 @@ from nanoresearch.schemas.experiment import (
 from nanoresearch.schemas.paper import FigurePlaceholder, PaperSkeleton, Section
 from nanoresearch.schemas.manifest import (
     ArtifactRecord,
+    PipelineMode,
     PipelineStage,
     StageRecord,
     WorkspaceManifest,
@@ -304,6 +305,7 @@ class TestReviewOutput:
 class TestWorkspaceManifest:
     def test_create(self):
         m = WorkspaceManifest(session_id="abc123", topic="test")
+        assert m.pipeline_mode == PipelineMode.STANDARD
         assert m.current_stage == PipelineStage.INIT
         assert m.artifacts == []
 

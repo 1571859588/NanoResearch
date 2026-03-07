@@ -23,10 +23,8 @@ import json
 import logging
 import math
 import os
-import platform
 import subprocess
 import sys
-import venv
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +33,7 @@ from nanoresearch.agents.cluster_executor import ClusterExecutor
 from nanoresearch.agents.experiment_tools import build_experiment_tools
 from nanoresearch.agents.feedback_analyzer import FeedbackAnalyzer
 from nanoresearch.agents.preflight import PreflightChecker
+from nanoresearch.agents.runtime_env import RuntimeEnvironmentManager
 from nanoresearch.schemas.iteration import (
     ExperimentHypothesis,
     FeedbackAnalysis,
@@ -1013,15 +1012,21 @@ The goal is to get real experimental results (metric numbers) — not placeholde
     # Sub-round checkpoint helpers
     # ------------------------------------------------------------------
 
-    def _save_iteration_checkpoint(self, state: IterationState) -> None:
+    def _save_iteration_checkpoint(
+        self,
+        state: IterationState,
+        checkpoint_path: str = "logs/iteration_checkpoint.json",
+    ) -> None:
         """Save iteration state checkpoint for crash recovery."""
         self.workspace.write_json(
-            "logs/iteration_checkpoint.json",
+            checkpoint_path,
             state.model_dump(),
         )
 
     def _load_iteration_checkpoint(
-        self, default_state: IterationState
+        self,
+        default_state: IterationState,
+        checkpoint_path: str = "logs/iteration_checkpoint.json",
     ) -> tuple[IterationState, int]:
         """Load iteration checkpoint if available.
 
@@ -1029,7 +1034,7 @@ The goal is to get real experimental results (metric numbers) — not placeholde
         resume from (1 if no checkpoint exists).
         """
         try:
-            data = self.workspace.read_json("logs/iteration_checkpoint.json")
+            data = self.workspace.read_json(checkpoint_path)
             if isinstance(data, dict) and data.get("rounds"):
                 state = IterationState.model_validate(data)
                 completed_rounds = len(state.rounds)
@@ -1061,6 +1066,7 @@ The goal is to get real experimental results (metric numbers) — not placeholde
         history_summary: str,
         blueprint: str,
         preflight_error_ctx: str = "",
+        code_dir: Path | None = None,
     ) -> ExperimentHypothesis:
         """LLM generates the next iteration hypothesis from feedback."""
         analysis_text = ""
@@ -1073,10 +1079,10 @@ The goal is to get real experimental results (metric numbers) — not placeholde
                 f"overfitting={analysis.training_dynamics.overfitting_detected}, "
                 f"stability={analysis.training_dynamics.loss_stability}\n"
                 f"Error categories: {analysis.error_categories}"
-            )
+        )
 
         # Collect actual file list from code_dir for the LLM
-        code_dir = self.workspace.path / "code"
+        code_dir = code_dir or (self.workspace.path / "code")
         actual_files = []
         if code_dir.exists():
             for f in sorted(code_dir.rglob("*")):
@@ -1339,7 +1345,9 @@ Output ONLY valid JSON array."""
                                 )
 
                     if applied > 0:
-                        self.workspace.write_text(f"code/{file_path}", current)
+                        target_path = code_dir / file_path
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                        target_path.write_text(current, encoding="utf-8")
                         modified_files.append(file_path)
                         self.log(f"  Edited: {file_path} ({applied}/{len(edits)} edits applied)")
                 else:
@@ -1347,7 +1355,9 @@ Output ONLY valid JSON array."""
                     content = change.get("content", "")
                     if not content:
                         continue
-                    self.workspace.write_text(f"code/{file_path}", content)
+                    target_path = code_dir / file_path
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    target_path.write_text(content, encoding="utf-8")
                     modified_files.append(file_path)
                     self.log(f"  Wrote: {file_path}")
 
@@ -2508,103 +2518,19 @@ Return JSON:
 
         Returns the path to the Python executable.
         """
-        # --- Option A: Use existing conda env ---
-        conda_env = self.config.experiment_conda_env
-        if conda_env:
-            conda_python = self._find_conda_python(conda_env)
-            if conda_python:
-                self.log(f"Using existing conda env '{conda_env}': {conda_python}")
-                # Install any missing requirements into the conda env
-                await self._install_missing_requirements(conda_python, code_dir)
-                return conda_python
-            else:
-                self.log(f"Conda env '{conda_env}' not found, falling back to venv")
-
-        # --- Option B: Create isolated venv ---
-        venv_dir = code_dir / ".venv"
-        is_windows = platform.system() == "Windows"
-        if is_windows:
-            venv_python = str(venv_dir / "Scripts" / "python.exe")
-        else:
-            venv_python = str(venv_dir / "bin" / "python")
-
-        loop = asyncio.get_running_loop()
-
-        if not venv_dir.exists():
-            self.log("Creating isolated venv at code/.venv ...")
-            try:
-                await loop.run_in_executor(
-                    None,
-                    lambda: venv.create(str(venv_dir), with_pip=True),
-                )
-                self.log(f"Venv created (python: {venv_python})")
-            except (OSError, subprocess.CalledProcessError) as e:
-                self.log(f"Venv creation failed: {e}, falling back to system Python")
-                return sys.executable
-        else:
-            self.log("Reusing existing venv at code/.venv")
-
-        await self._install_missing_requirements(venv_python, code_dir)
-        return venv_python
+        runtime = RuntimeEnvironmentManager(self.config, self.log)
+        env_info = await runtime.prepare(code_dir)
+        return str(env_info.get("python", sys.executable))
 
     @staticmethod
     def _find_conda_python(env_name: str) -> str | None:
         """Find the Python executable for a named conda env."""
-        try:
-            result = subprocess.run(
-                ["conda", "run", "-n", env_name, "python", "-c",
-                 "import sys; print(sys.executable)"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode == 0:
-                path = result.stdout.strip().split("\n")[-1].strip()
-                if path and Path(path).exists():
-                    return path
-        except Exception:
-            pass
-
-        # Fallback: check common paths
-        is_windows = platform.system() == "Windows"
-        for base in [Path.home() / "anaconda3", Path.home() / "miniconda3",
-                      Path("D:/anaconda"), Path("C:/anaconda3")]:
-            if is_windows:
-                p = base / "envs" / env_name / "python.exe"
-            else:
-                p = base / "envs" / env_name / "bin" / "python"
-            if p.exists():
-                return str(p)
-        return None
+        return RuntimeEnvironmentManager.find_conda_python(env_name)
 
     async def _install_missing_requirements(self, python: str, code_dir: Path) -> None:
         """pip install requirements.txt if it exists (skips already-installed)."""
-        req_file = code_dir / "requirements.txt"
-        if not req_file.exists():
-            self.log("No requirements.txt found, skipping pip install")
-            return
-
-        self.log("Installing requirements.txt (skipping already-installed)...")
-        loop = asyncio.get_running_loop()
-        try:
-            proc_result = await loop.run_in_executor(
-                None,
-                lambda: subprocess.run(
-                    [python, "-m", "pip", "install",
-                     "-r", str(req_file), "--quiet"],
-                    cwd=str(code_dir),
-                    capture_output=True,
-                    text=False,
-                    timeout=600,
-                ),
-            )
-            if proc_result.returncode == 0:
-                self.log("Requirements OK")
-            else:
-                self.log(
-                    f"pip install warnings (rc={proc_result.returncode}): "
-                    f"{_decode_bytes(proc_result.stderr, 500)}"
-                )
-        except Exception as e:
-            self.log(f"pip install error: {e}")
+        runtime = RuntimeEnvironmentManager(self.config, self.log)
+        await runtime.install_requirements(python, code_dir)
 
     async def _run_main_py(self, code_dir: Path, python: str | None = None) -> dict:
         """Run main.py in a subprocess with timeout."""

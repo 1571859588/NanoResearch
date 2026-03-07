@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from nanoresearch.agents.base import BaseResearchAgent
+from nanoresearch.agents.project_runner import (
+    RUNNER_CONFIG_NAME,
+    RUNNER_SCRIPT_NAME,
+    ensure_project_runner,
+)
 from nanoresearch.schemas.manifest import PipelineStage
 
 logger = logging.getLogger(__name__)
@@ -18,7 +23,7 @@ logger = logging.getLogger(__name__)
 class CodingAgent(BaseResearchAgent):
     """Generates runnable training code + SLURM scripts based on cloned repos and experiment plan."""
 
-    stage = PipelineStage.EXPERIMENT  # placeholder for base class
+    stage = PipelineStage.CODING
 
     @property
     def stage_config(self):
@@ -86,9 +91,17 @@ class CodingAgent(BaseResearchAgent):
                 (code_dir / filename).write_text(content)
                 self.log(f"Re-generated {filename} to fix invalid paths: {bad_paths}")
 
+        original_train_command = code_plan.get("train_command", "python train.py")
+        runner_assets = ensure_project_runner(code_dir, original_train_command)
+        generated_files.extend([RUNNER_SCRIPT_NAME, RUNNER_CONFIG_NAME])
+        self.log("Generated deterministic execution runner")
+
         # Step 3: Generate SLURM script
         slurm_script = await self._generate_slurm_script(
-            code_plan, experiment_blueprint, code_dir
+            code_plan,
+            experiment_blueprint,
+            code_dir,
+            runner_assets["runner_command"],
         )
         slurm_path = code_dir / "run_train.slurm"
         slurm_path.write_text(slurm_script)
@@ -100,11 +113,22 @@ class CodingAgent(BaseResearchAgent):
         (code_dir / "requirements.txt").write_text(requirements)
         generated_files.append("requirements.txt")
 
+        # Step 5: Generate environment.yml for optional conda-based execution
+        environment_yaml = self._generate_environment_yaml(code_plan)
+        (code_dir / "environment.yml").write_text(environment_yaml)
+        generated_files.append("environment.yml")
+
         result = {
             "code_plan": code_plan,
             "generated_files": generated_files,
             "code_dir": str(code_dir),
             "slurm_script": str(slurm_path),
+            "train_command": runner_assets["runner_command"],
+            "entry_train_command": original_train_command,
+            "runner_script": runner_assets["runner_script"],
+            "runner_config": runner_assets["runner_config"],
+            "requirements_path": str(code_dir / "requirements.txt"),
+            "environment_file": str(code_dir / "environment.yml"),
         }
 
         self.workspace.write_json("plans/coding_output.json", result)
@@ -179,7 +203,7 @@ Design a runnable project. Return JSON:
   "files": [
     {{
       "path": "train.py",
-      "description": "Main training script with argparse, training loop, evaluation",
+      "description": "Main training script with argparse, training loop, evaluation, and support for --dry-run / --quick-eval",
       "is_entrypoint": true
     }},
     {{
@@ -270,6 +294,9 @@ IMPORTANT:
 - Include a results/ directory for outputs.
 - Log training progress (loss, metrics) at each epoch.
 - Handle both training and evaluation in the same script or via flags.
+- The entry script MUST support `--dry-run` for a lightweight pipeline sanity check.
+- The entry script MUST support `--quick-eval` for a tiny end-to-end experiment that writes `results/metrics.json`.
+- In `--quick-eval` mode, force a very small subset / a few epochs so it finishes quickly on a local machine.
 - CRITICAL: All class/function names used in imports between files MUST be consistent.
   For example, if train.py does `from dataset import MyDataset`, then dataset.py MUST define `class MyDataset`.
   If train.py does `import model; model.create_model(...)`, then model.py MUST define `def create_model(...)`.
@@ -316,12 +343,15 @@ Return ONLY the Python code, no markdown fences."""
         return content
 
     async def _generate_slurm_script(
-        self, code_plan: dict, blueprint: dict, code_dir: Path
+        self,
+        code_plan: dict,
+        blueprint: dict,
+        code_dir: Path,
+        train_command: str,
     ) -> str:
         """Generate a SLURM batch script for training."""
         compute = blueprint.get("compute_requirements", {})
         num_gpus = min(compute.get("num_gpus", 1), 4)  # cap at 4
-        train_cmd = code_plan.get("train_command", "python train.py")
         project_name = code_plan.get("project_name", "experiment")
 
         script = f"""#!/bin/bash
@@ -362,7 +392,7 @@ pip install -r requirements.txt --quiet 2>/dev/null || true
 
 # Run training
 echo "Starting training..."
-{train_cmd}
+{train_command}
 
 EXIT_CODE=$?
 
@@ -430,6 +460,27 @@ exit $EXIT_CODE
                 deps.append(d)
 
         return "\n".join(sorted(set(deps))) + "\n"
+
+    def _generate_environment_yaml(self, code_plan: dict) -> str:
+        """Generate a lightweight conda environment file from the code plan."""
+        deps = code_plan.get("dependencies", [])
+        if not deps:
+            deps = ["torch", "numpy", "pandas", "scikit-learn", "matplotlib", "tqdm"]
+
+        lines = [
+            "name: nanoresearch-auto",
+            "channels:",
+            "  - conda-forge",
+            "  - pytorch",
+            "  - defaults",
+            "dependencies:",
+            "  - python=3.10",
+            "  - pip",
+            "  - pip:",
+        ]
+        for dep in sorted(set(deps)):
+            lines.append(f"      - {dep}")
+        return "\n".join(lines) + "\n"
 
     def _validate_data_paths(
         self, code_dir: Path, downloaded_resources: list[dict],

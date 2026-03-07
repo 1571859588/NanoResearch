@@ -1213,7 +1213,7 @@ class FigureAgent(BaseResearchAgent):
         # --- Section 1: Real experiment results (highest priority) ---
         has_real_results = bool(
             experiment_results
-            and experiment_status == "success"
+            and (experiment_status or "").lower() not in ("pending", "failed", "error", "unknown")
             and experiment_results.get("main_results")
         )
 

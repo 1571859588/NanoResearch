@@ -45,6 +45,12 @@ class ReviewAgent(BaseResearchAgent):
         if not isinstance(experiment_blueprint, dict):
             experiment_blueprint = {}
 
+        # Grounding metadata from writing stage — used to protect real results
+        self._writing_grounding: dict = inputs.get("writing_grounding") or {}
+        self._experiment_results: dict = inputs.get("experiment_results") or {}
+        self._experiment_analysis: dict = inputs.get("experiment_analysis") or {}
+        self._experiment_status: str = inputs.get("experiment_status", "pending")
+
         if not paper_tex:
             self.log("No paper.tex content available, skipping review")
             return ReviewOutput().model_dump(mode="json")
@@ -837,6 +843,9 @@ Suggestions (optional improvements):
 4. Do NOT remove or modify \\begin{{figure}}...\\end{{figure}} or \\begin{{table}}...\\end{{table}} blocks
 5. Keep the same overall structure and length (±20%)
 6. Use ONLY citation keys from the paper's bibliography
+7. GROUNDING: Do NOT change any concrete numbers (accuracy, F1, loss, etc.) that appear in tables or experimental results. These come from real experiments. Do NOT "improve" them, round them, or replace them with different values. Do NOT add new result numbers that were not in the original text.
+
+{self._build_revision_grounding_block()}
 
 Current paper (LaTeX):
 ```latex
@@ -859,6 +868,46 @@ If the section contains \\subsection{{}} commands, include them in your output."
         except Exception as e:
             logger.warning("Failed to revise section '%s': %s", section_review.section, e)
             return ""
+
+    def _build_revision_grounding_block(self) -> str:
+        """Build a grounding context block for revision prompts.
+
+        Tells the revision LLM which numbers are real and must be preserved.
+        """
+        grounding = getattr(self, '_writing_grounding', {})
+        analysis = getattr(self, '_experiment_analysis', {})
+        status = getattr(self, '_experiment_status', 'pending')
+
+        completeness = grounding.get('result_completeness', 'none') if grounding else 'none'
+        has_real = grounding.get('has_real_results', False) if grounding else False
+
+        if not has_real:
+            return (
+                "=== GROUNDING STATUS: NO REAL RESULTS ===\n"
+                "This paper has NO real experiment results. During revision:\n"
+                "- Do NOT add any experimental numbers\n"
+                "- Do NOT fill empty table cells with fabricated values\n"
+                "- Preserve any 'results pending' or 'future work' language\n"
+                "=== END GROUNDING ==="
+            )
+
+        lines = [
+            f"=== GROUNDING STATUS: {completeness.upper()} RESULTS ===",
+            "This paper contains REAL experiment results. During revision:",
+            "- PRESERVE all numbers in tables (they come from real experiments)",
+            "- Do NOT round, adjust, or 'improve' any metric values",
+            "- Do NOT add new baseline numbers that weren't in the original",
+        ]
+
+        # Add real metric values for reference
+        final_metrics = analysis.get('final_metrics', {}) if isinstance(analysis, dict) else {}
+        if isinstance(final_metrics, dict) and final_metrics:
+            lines.append("Real metrics (for reference, do NOT modify):")
+            for k, v in list(final_metrics.items())[:10]:
+                lines.append(f"  {k} = {v}")
+
+        lines.append("=== END GROUNDING ===")
+        return "\n".join(lines)
 
     async def _meta_refine_revision(
         self,

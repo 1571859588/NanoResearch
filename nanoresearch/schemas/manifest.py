@@ -16,34 +16,102 @@ class PipelineStage(str, Enum):
     IDEATION = "IDEATION"
     PLANNING = "PLANNING"
     EXPERIMENT = "EXPERIMENT"
-    # Deep pipeline stages
     SETUP = "SETUP"
     CODING = "CODING"
     EXECUTION = "EXECUTION"
     ANALYSIS = "ANALYSIS"
-    # Shared stages
     FIGURE_GEN = "FIGURE_GEN"
     WRITING = "WRITING"
     REVIEW = "REVIEW"
     DONE = "DONE"
     FAILED = "FAILED"
 
-# Valid stage record status values
+
+class PipelineMode(str, Enum):
+    """Supported pipeline variants."""
+
+    STANDARD = "standard"
+    DEEP = "deep"
+
+
+STANDARD_PROCESSING_STAGES: list[PipelineStage] = [
+    PipelineStage.IDEATION,
+    PipelineStage.PLANNING,
+    PipelineStage.EXPERIMENT,
+    PipelineStage.FIGURE_GEN,
+    PipelineStage.WRITING,
+    PipelineStage.REVIEW,
+]
+
+DEEP_PROCESSING_STAGES: list[PipelineStage] = [
+    PipelineStage.IDEATION,
+    PipelineStage.PLANNING,
+    PipelineStage.SETUP,
+    PipelineStage.CODING,
+    PipelineStage.EXECUTION,
+    PipelineStage.ANALYSIS,
+    PipelineStage.FIGURE_GEN,
+    PipelineStage.WRITING,
+    PipelineStage.REVIEW,
+]
+
+DEEP_ONLY_STAGES: tuple[PipelineStage, ...] = (
+    PipelineStage.SETUP,
+    PipelineStage.CODING,
+    PipelineStage.EXECUTION,
+    PipelineStage.ANALYSIS,
+)
+
+
+def processing_stages_for_mode(
+    mode: PipelineMode = PipelineMode.STANDARD,
+) -> list[PipelineStage]:
+    """Return the ordered working stages for the selected pipeline mode."""
+
+    if mode == PipelineMode.DEEP:
+        return list(DEEP_PROCESSING_STAGES)
+    return list(STANDARD_PROCESSING_STAGES)
+
+
+def _build_transitions(
+    stages: list[PipelineStage],
+) -> dict[PipelineStage, list[PipelineStage]]:
+    transitions: dict[PipelineStage, list[PipelineStage]] = {
+        PipelineStage.DONE: [],
+        PipelineStage.FAILED: [],
+    }
+    ordered = [PipelineStage.INIT, *stages, PipelineStage.DONE]
+    for current, nxt in zip(ordered, ordered[1:]):
+        transitions[current] = [nxt, PipelineStage.FAILED]
+    return transitions
+
+
+def _merge_transitions(
+    *transition_sets: dict[PipelineStage, list[PipelineStage]],
+) -> dict[PipelineStage, list[PipelineStage]]:
+    merged: dict[PipelineStage, list[PipelineStage]] = {
+        stage: [] for stage in PipelineStage
+    }
+    for transitions in transition_sets:
+        for stage, allowed in transitions.items():
+            for target in allowed:
+                if target not in merged[stage]:
+                    merged[stage].append(target)
+    return merged
+
+
+STANDARD_STAGE_TRANSITIONS = _build_transitions(STANDARD_PROCESSING_STAGES)
+DEEP_STAGE_TRANSITIONS = _build_transitions(DEEP_PROCESSING_STAGES)
+
+# Combined transition table for schema/documentation purposes. Runtime
+# validation should use the mode-specific tables above.
+STAGE_TRANSITIONS: dict[PipelineStage, list[PipelineStage]] = _merge_transitions(
+    STANDARD_STAGE_TRANSITIONS,
+    DEEP_STAGE_TRANSITIONS,
+)
+
+
 StageStatus = Literal["pending", "running", "completed", "failed"]
-
-
-# Valid forward transitions in the state machine.
-STAGE_TRANSITIONS: dict[PipelineStage, list[PipelineStage]] = {
-    PipelineStage.INIT: [PipelineStage.IDEATION, PipelineStage.FAILED],
-    PipelineStage.IDEATION: [PipelineStage.PLANNING, PipelineStage.FAILED],
-    PipelineStage.PLANNING: [PipelineStage.EXPERIMENT, PipelineStage.FAILED],
-    PipelineStage.EXPERIMENT: [PipelineStage.FIGURE_GEN, PipelineStage.FAILED],
-    PipelineStage.FIGURE_GEN: [PipelineStage.WRITING, PipelineStage.FAILED],
-    PipelineStage.WRITING: [PipelineStage.REVIEW, PipelineStage.FAILED],
-    PipelineStage.REVIEW: [PipelineStage.DONE, PipelineStage.FAILED],
-    PipelineStage.DONE: [],
-    PipelineStage.FAILED: [],
-}
 
 
 class StageRecord(BaseModel):
@@ -71,9 +139,10 @@ class ArtifactRecord(BaseModel):
 class WorkspaceManifest(BaseModel):
     """Master manifest for a research session workspace."""
 
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     session_id: str
     topic: str
+    pipeline_mode: PipelineMode = PipelineMode.STANDARD
     current_stage: PipelineStage = PipelineStage.INIT
     stages: dict[str, StageRecord] = Field(default_factory=dict)
     artifacts: list[ArtifactRecord] = Field(default_factory=list)
