@@ -215,13 +215,29 @@ def resume(
                  "skipped": "[dim]--[/dim]", "retrying": "[yellow]!![/yellow]"}
         console.print(f"  {icons.get(status, '  ')} {message}")
 
-    orchestrator = PipelineOrchestrator(ws, config, progress_callback=_progress)
-    try:
-        result = asyncio.run(_run_pipeline(orchestrator, manifest.topic))
-        _print_result(result, ws)
-    except Exception as e:
-        console.print(f"[red]Pipeline failed:[/red] {e}")
-        raise typer.Exit(1)
+    # Detect deep pipeline: check if SETUP/CODING/EXECUTION stages exist
+    is_deep = any(
+        s in manifest.stages for s in ("SETUP", "CODING", "EXECUTION")
+    )
+
+    if is_deep:
+        from nanoresearch.pipeline.deep_orchestrator import DeepPipelineOrchestrator
+        console.print("  [magenta]Detected DEEP pipeline — using DeepPipelineOrchestrator[/magenta]")
+        orchestrator = DeepPipelineOrchestrator(ws, config)
+        try:
+            result = asyncio.run(_run_deep_pipeline(orchestrator, manifest.topic))
+            _print_result(result, ws)
+        except Exception as e:
+            console.print(f"[red]Deep pipeline failed:[/red] {e}")
+            raise typer.Exit(1)
+    else:
+        orchestrator = PipelineOrchestrator(ws, config, progress_callback=_progress)
+        try:
+            result = asyncio.run(_run_pipeline(orchestrator, manifest.topic))
+            _print_result(result, ws)
+        except Exception as e:
+            console.print(f"[red]Pipeline failed:[/red] {e}")
+            raise typer.Exit(1)
 
 
 @app.command()

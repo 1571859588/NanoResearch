@@ -16,6 +16,12 @@ class PipelineStage(str, Enum):
     IDEATION = "IDEATION"
     PLANNING = "PLANNING"
     EXPERIMENT = "EXPERIMENT"
+    # Deep pipeline stages
+    SETUP = "SETUP"
+    CODING = "CODING"
+    EXECUTION = "EXECUTION"
+    ANALYSIS = "ANALYSIS"
+    # Shared stages
     FIGURE_GEN = "FIGURE_GEN"
     WRITING = "WRITING"
     REVIEW = "REVIEW"

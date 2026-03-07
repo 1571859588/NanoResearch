@@ -77,6 +77,14 @@ class DeepPipelineOrchestrator:
                 results.update(self._load_stage_output(stage_name))
                 continue
 
+            # Reset 'running' status from a previous crash
+            if stage_record and stage_record.status == "running":
+                logger.warning(
+                    f"Stage {stage_name} was left in 'running' status "
+                    f"(likely from a crash). Resetting to 'pending'."
+                )
+                stage_record.status = "pending"
+
             # Run stage with retry
             logger.info(f"Running deep stage: {stage_name}")
             stage_result = await self._run_stage_with_retry(
