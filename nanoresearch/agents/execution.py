@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Poll interval and max wait time for SLURM jobs
 POLL_INTERVAL = 30  # seconds
-MAX_WAIT_TIME = 4 * 3600  # 4 hours max
+MAX_WAIT_TIME = 7 * 24 * 3600  # 7 days — real training can run for days
 
 
 class ExecutionAgent(BaseResearchAgent):
@@ -73,13 +73,23 @@ class ExecutionAgent(BaseResearchAgent):
         final_result = None
 
         for debug_round in range(MAX_DEBUG_ROUNDS + 1):
-            # Submit SLURM job
-            job_id = await self._submit_job(slurm_script)
-            self.log(f"Submitted SLURM job: {job_id}")
-
-            # Monitor job until completion
-            final_status = await self._monitor_job(job_id, code_dir)
-            self.log(f"Job {job_id} finished with status: {final_status}")
+            # On first round, check for existing job from a previous run (resume)
+            existing = await self._find_existing_job(code_dir) if debug_round == 0 else None
+            if existing:
+                job_id, existing_status = existing
+                self.log(f"Found existing SLURM job {job_id} (status: {existing_status})")
+                if existing_status == "COMPLETED":
+                    final_status = "COMPLETED"
+                else:  # RUNNING or PENDING
+                    final_status = await self._monitor_job(job_id, code_dir)
+                    self.log(f"Existing job {job_id} finished: {final_status}")
+            else:
+                # Submit new SLURM job
+                job_id = await self._submit_job(slurm_script)
+                self.log(f"Submitted SLURM job: {job_id}")
+                # Monitor job until completion
+                final_status = await self._monitor_job(job_id, code_dir)
+                self.log(f"Job {job_id} finished with status: {final_status}")
 
             # Collect results
             results = await self._collect_results(code_dir, job_id, final_status)
@@ -165,6 +175,25 @@ class ExecutionAgent(BaseResearchAgent):
         self.workspace.write_json("plans/execution_output.json", final_result)
         return final_result
 
+    async def _find_existing_job(self, code_dir: Path) -> tuple[str, str] | None:
+        """Check if a previous SLURM job exists (from a crashed run).
+
+        Returns (job_id, status) if found, None otherwise.
+        """
+        tracker = code_dir / "logs" / "active_job_id.txt"
+        if not tracker.exists():
+            return None
+
+        job_id = tracker.read_text().strip()
+        if not job_id or not job_id.isdigit():
+            return None
+
+        status = await self._get_job_status(job_id)
+        if status in ("RUNNING", "PENDING", "COMPLETED"):
+            return (job_id, status)
+
+        return None  # FAILED/CANCELLED/UNKNOWN — need fresh submit
+
     async def _submit_job(self, slurm_script: str) -> str:
         """Submit a SLURM batch job and return the job ID."""
         if not Path(slurm_script).exists():
@@ -181,7 +210,14 @@ class ExecutionAgent(BaseResearchAgent):
                 f"Failed to submit SLURM job. stdout: {stdout}, stderr: {stderr}"
             )
 
-        return match.group(1)
+        job_id = match.group(1)
+
+        # Save job ID for resume tracking
+        tracker_path = Path(slurm_script).parent / "logs" / "active_job_id.txt"
+        tracker_path.parent.mkdir(parents=True, exist_ok=True)
+        tracker_path.write_text(job_id)
+
+        return job_id
 
     async def _monitor_job(self, job_id: str, code_dir: Path) -> str:
         """Poll SLURM until job completes. Returns final status."""
