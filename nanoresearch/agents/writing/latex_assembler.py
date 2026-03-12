@@ -132,6 +132,37 @@ def _sanitize_prose_line(line: str, env_stack: list[str]) -> str:
     return result
 
 
+# ---------------------------------------------------------------------------
+# LLM thinking leak filter
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate LLM meta-commentary leaked into paper content.
+# Each pattern is anchored to a standalone line (possibly preceded by whitespace).
+_LLM_THINKING_PATTERNS = [
+    # Direct self-reference / chain-of-thought leaks
+    re.compile(r'^\s*Now I have enough context\.?\s*$', re.MULTILINE),
+    re.compile(r'^\s*(?:Let me|I\'ll now|I will now|I need to|I should)\b.*$', re.MULTILINE),
+    re.compile(r'^\s*(?:Looking at|Based on this|Here is|Sure,|OK,|Hmm,|Okay,)\b.*$', re.MULTILINE),
+    re.compile(r'^\s*(?:Now,? let\'?s|First,? I|Next,? I)\b.*$', re.MULTILINE),
+    # Common LLM preamble / postamble
+    re.compile(r'^\s*Here (?:is|are) the (?:LaTeX|content|section|text)\b.*$', re.MULTILINE),
+    re.compile(r'^\s*(?:Below is|The following is)\b.*$', re.MULTILINE),
+]
+
+
+def _strip_llm_thinking(text: str) -> str:
+    """Remove LLM meta-commentary lines from section content.
+
+    Only removes lines that are *standalone* (i.e. the entire line matches
+    a thinking pattern).  Does not touch lines embedded in paragraphs.
+    """
+    for pat in _LLM_THINKING_PATTERNS:
+        text = pat.sub('', text)
+    # Collapse runs of 3+ blank lines into 2
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
 class _LaTeXAssemblerMixin:
     """Mixin — LaTeX rendering and compilation."""
 
@@ -149,30 +180,38 @@ class _LaTeXAssemblerMixin:
             return self._fallback_latex(skeleton)
 
     def _fallback_latex(self, skeleton: PaperSkeleton) -> str:
-        """Generate LaTeX without templates as a fallback."""
+        """Generate LaTeX without templates as a fallback.
+
+        Uses the NeurIPS 2025 document class by default.  The neurips_2025.sty
+        file is copied into the compilation directory by ``_copy_style_files``.
+        """
         lines = [
             r"\documentclass{article}",
+            "",
+            r"%% ---- NeurIPS 2025 Style ----",
+            r"\usepackage[preprint]{neurips_2025}",
+            "",
+            r"%% ---- Standard Packages ----",
             r"\usepackage[utf8]{inputenc}",
             r"\usepackage[T1]{fontenc}",
-            r"\usepackage[a4paper, margin=1in]{geometry}",
             r"\usepackage{amsmath,amssymb}",
             r"\usepackage{graphicx}",
             r"\usepackage{hyperref}",
-            r"\usepackage{natbib}",
             r"\usepackage{booktabs}",
+            r"\usepackage{xcolor}",
+            r"\usepackage{float}",
             r"\usepackage[section]{placeins}",  # prevent floats drifting across sections
             r"\usepackage{multirow}",  # for multi-row table cells
             r"\graphicspath{{figures/}}",
             "",
             f"\\title{{{skeleton.title}}}",
             f"\\author{{{' \\and '.join(skeleton.authors)}}}",
-            r"\date{}",
             "",
             r"\begin{document}",
             r"\maketitle",
             "",
             r"\begin{abstract}",
-            skeleton.abstract,
+            _strip_llm_thinking(skeleton.abstract),
             r"\end{abstract}",
             "",
         ]
@@ -181,13 +220,13 @@ class _LaTeXAssemblerMixin:
             lines.append(f"\\section{{{section.heading}}}")
             if section.label:
                 lines.append(f"\\label{{{section.label}}}")
-            lines.append(section.content)
+            lines.append(_strip_llm_thinking(section.content))
             lines.append("")
             for sub in section.subsections:
                 lines.append(f"\\subsection{{{sub.heading}}}")
                 if sub.label:
                     lines.append(f"\\label{{{sub.label}}}")
-                lines.append(sub.content)
+                lines.append(_strip_llm_thinking(sub.content))
                 lines.append("")
 
         lines.extend([
@@ -202,7 +241,7 @@ class _LaTeXAssemblerMixin:
         self,
         tex_path,
         max_fix_attempts: int = MAX_LATEX_FIX_ATTEMPTS,
-        template_format: str = "arxiv",
+        template_format: str = "neurips2025",
     ) -> dict:
         """Compile LaTeX to PDF with automatic error-fix loop.
 
@@ -1014,16 +1053,39 @@ class _LaTeXAssemblerMixin:
     ) -> str:
         """Validate that every figure file from figure_output has \\includegraphics in the LaTeX.
 
-        If a figure is missing, inject a figure block before \\end{document}.
+        Missing figures are injected near their \\ref{fig:...} citation when
+        possible, or into an appropriate section based on the figure key.
+        Failed/empty figures are skipped entirely.
         Returns the (possibly modified) LaTeX content.
         """
         figures = (figure_output or {}).get("figures", {})
         if not figures:
             return latex_content
 
-        missing_blocks: list[str] = []
+        # Classify figure keys for section-based fallback placement
+        _SECTION_HINTS = {
+            "sec:intro": ("overview", "task", "motivation", "teaser",
+                          "intuition", "illustration"),
+            "sec:method": ("architecture", "framework", "pipeline", "model",
+                           "diagram", "workflow", "detail"),
+            "sec:experiments": ("result", "comparison", "performance", "main",
+                                "ablation", "efficiency", "tradeoff"),
+        }
+
+        missing_figures: list[tuple[str, str]] = []  # (label_suffix, block)
         for fig_key, fig_data in figures.items():
+            # Skip failed/empty figures (Fix 6)
+            if fig_data.get("status") == "failed":
+                self.log(f"  VALIDATION: skipping failed figure '{fig_key}'")
+                continue
             if "error" in fig_data and "png_path" not in fig_data:
+                self.log(f"  VALIDATION: skipping errored figure '{fig_key}'")
+                continue
+            # Skip figures whose image file doesn't exist
+            png_path = fig_data.get("png_path")
+            pdf_path = fig_data.get("pdf_path")
+            if not png_path and not pdf_path:
+                self.log(f"  VALIDATION: skipping '{fig_key}' — no image file")
                 continue
 
             pdf_name = f"{fig_key}.pdf"
@@ -1049,38 +1111,67 @@ class _LaTeXAssemblerMixin:
                 f"\\label{{fig:{label_suffix}}}\n"
                 "\\end{figure}"
             )
-            missing_blocks.append(block)
+            missing_figures.append((label_suffix, block, fig_key))
 
-        if missing_blocks:
-            self.log(f"  VALIDATION: injecting {len(missing_blocks)} missing figure(s)")
-            # BUG-43 fix: insert BEFORE \bibliography (not before \end{document})
-            # so figures appear in the paper body, not after the references.
-            inject_text = "\n\n".join(missing_blocks)
-            inject_block = (
-                "\n\n% --- Auto-injected missing figures ---\n"
-                + inject_text
-                + "\n\n"
-            )
-            # Try anchors in order: \bibliographystyle, \bibliography,
-            # \begin{thebibliography}, \end{document}
-            bib_pos = -1
-            for anchor in (
-                r"\bibliographystyle{",
-                r"\bibliography{",
-                r"\begin{thebibliography}",
-                r"\end{document}",
-            ):
-                bib_pos = latex_content.find(anchor)
-                if bib_pos >= 0:
-                    break
-            if bib_pos >= 0:
-                latex_content = (
-                    latex_content[:bib_pos]
-                    + inject_block
-                    + latex_content[bib_pos:]
+        if missing_figures:
+            self.log(f"  VALIDATION: injecting {len(missing_figures)} missing figure(s)")
+            still_unplaced: list[tuple[str, str, str]] = []
+
+            for label_suffix, block, fig_key in missing_figures:
+                # Strategy 1: place near \ref{fig:...} citation
+                new_content, was_inserted = self._insert_figure_near_ref(
+                    latex_content, label_suffix, block,
                 )
-            else:
-                latex_content += "\n\n" + inject_text
+                if was_inserted:
+                    latex_content = new_content
+                    self.log(f"    Placed '{fig_key}' near its \\ref citation")
+                else:
+                    still_unplaced.append((label_suffix, block, fig_key))
+
+            # Strategy 2: place in appropriate section based on figure key
+            for label_suffix, block, fig_key in still_unplaced:
+                target_section = "sec:experiments"  # default
+                for sec_label, keywords in _SECTION_HINTS.items():
+                    if any(kw in fig_key.lower() for kw in keywords):
+                        target_section = sec_label
+                        break
+
+                # Find the section in LaTeX and insert after its \label
+                sec_pattern = re.compile(
+                    rf'\\label\{{{re.escape(target_section)}\}}',
+                )
+                sec_match = sec_pattern.search(latex_content)
+                if sec_match:
+                    # Insert after the next paragraph break
+                    search_start = sec_match.end()
+                    para_end = re.search(r'\n\s*\n', latex_content[search_start:])
+                    if para_end:
+                        insert_pos = search_start + para_end.end()
+                    else:
+                        insert_pos = search_start
+                    latex_content = (
+                        latex_content[:insert_pos]
+                        + "\n\n" + block + "\n"
+                        + latex_content[insert_pos:]
+                    )
+                    self.log(f"    Placed '{fig_key}' in {target_section}")
+                else:
+                    # Last resort: before bibliography
+                    for anchor in (
+                        r"\bibliographystyle{",
+                        r"\bibliography{",
+                        r"\begin{thebibliography}",
+                        r"\end{document}",
+                    ):
+                        bib_pos = latex_content.find(anchor)
+                        if bib_pos >= 0:
+                            latex_content = (
+                                latex_content[:bib_pos]
+                                + "\n\n" + block + "\n\n"
+                                + latex_content[bib_pos:]
+                            )
+                            self.log(f"    Placed '{fig_key}' before bibliography (fallback)")
+                            break
         else:
             self.log("  VALIDATION: all figures present in LaTeX ✓")
 

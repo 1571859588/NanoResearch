@@ -614,23 +614,7 @@ class FigureAgent(BaseResearchAgent):
             "metrics": proposed_metrics,
         })
 
-        # 3. Synthetic training log (30 epochs)
-        training_log: list[dict] = []
-        for epoch in range(1, 31):
-            t = epoch / 30
-            train_loss = (
-                2.5 * math.exp(-3.0 * t) + 0.3 + random.gauss(0, 0.02)
-            )
-            val_loss = (
-                2.8 * math.exp(-2.5 * t) + 0.5 + random.gauss(0, 0.04)
-            )
-            training_log.append({
-                "epoch": epoch,
-                "train_loss": round(max(train_loss, 0.1), 4),
-                "val_loss": round(max(val_loss, 0.2), 4),
-            })
-
-        # 4. Ablation — drop each key component one at a time
+        # 3. Ablation — drop each key component one at a time
         ablation_results: list[dict] = []
         components = method_info.get("key_components", [])
         for comp in components[:3]:
@@ -654,7 +638,7 @@ class FigureAgent(BaseResearchAgent):
         return {
             "main_results": main_results,
             "ablation_results": ablation_results,
-            "training_log": training_log,
+            "training_log": [],  # no synthetic training log — only real logs
         }
 
     # -----------------------------------------------------------------------
@@ -1217,28 +1201,19 @@ class FigureAgent(BaseResearchAgent):
     async def _generate_fallback_chart(
         self, fig_key: str, filename_stem: str, caption: str,
     ) -> dict[str, Any]:
-        """Generate a simple fallback chart if LLM code fails."""
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
+        """Return a failed status dict — do NOT generate a placeholder image.
 
-        fig, ax = plt.subplots(figsize=(8, 5))
-        ax.text(0.5, 0.5, f"[{fig_key}]\nChart generation failed.\nSee logs for details.",
-                ha="center", va="center", fontsize=14, transform=ax.transAxes)
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        ax.axis("off")
-
-        png_path = self.workspace.path / "figures" / f"{filename_stem}.png"
-        png_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(str(png_path), dpi=300, bbox_inches="tight")
-        plt.close(fig)
-        plt.close("all")  # ensure no leaked figures from prior in-process rendering
-
-        self.log(f"  {fig_key} fallback placeholder saved")
-        return await self._save_figure_files(fig_key, filename_stem, caption,
-                                             png_path.read_bytes(), already_saved=True,
-                                             code_generated=True)
+        Previously this generated a "Chart generation failed" placeholder PNG.
+        Now we simply mark the figure as failed so the LaTeX assembler skips it
+        entirely, rather than embedding a useless placeholder in the paper.
+        """
+        self.log(f"  {fig_key} chart generation failed — marking as failed (no placeholder)")
+        return {
+            "fig_key": fig_key,
+            "caption": caption,
+            "status": "failed",
+            "error": "Chart generation failed after all retries",
+        }
 
     # -----------------------------------------------------------------------
     # Shared: save PNG + PDF + register artifacts

@@ -468,7 +468,7 @@ class _GroundingMixin:
             "\\setlength{\\tabcolsep}{4pt}",
             f"\\caption{{Main experimental results on {_escape_latex_text(dataset_str)}. "
             "Best results are in \\textbf{bold}. "
-            "Results for the proposed method are pending due to execution issues.}",
+            "'--' indicates that the method was not evaluated in our experiments.}",
             "\\label{tab:main_results}",
             f"\\begin{{tabular}}{{{col_spec}}}",
             "\\toprule",
@@ -748,9 +748,14 @@ class _GroundingMixin:
             return ""
         completeness_desc = {
             "full": "FULL — complete experiment results are available. Use exact numbers.",
-            "partial": "PARTIAL — experiment ran but did not fully converge. Use available numbers with caveats.",
+            "partial": "PARTIAL — experiment ran but did not fully converge.\n"
+                       "ONLY use numbers from REAL EXPERIMENT RESULTS provided below. "
+                       "For methods that were NOT actually run in our experiments, use '--' or 'N/A' in table cells. "
+                       "Do NOT use projected/expected values from the experiment blueprint — those are NOT real results. "
+                       "You MAY cite numbers from the original published papers of baseline methods (with citations).",
             "quick_eval": "QUICK-EVAL ONLY — results are from a shortened evaluation run. "
-                          "Use these numbers but note they may not reflect full training.",
+                          "Use these numbers but note they may not reflect full training. "
+                          "For methods NOT actually evaluated, use '--' in table cells.",
             "none": "NONE — no experiment results available.\n"
                     "ABSOLUTE BAN: Do NOT write ANY specific numbers, percentages, improvement "
                     "claims, or quantitative comparisons for the proposed method. "
