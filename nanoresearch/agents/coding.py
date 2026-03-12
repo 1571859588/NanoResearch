@@ -468,9 +468,9 @@ Return ONLY the Python code, no markdown fences."""
         project_name = code_plan.get("project_name", "experiment")
 
         # BUG-16 fix: read SLURM partition from config instead of hardcoding
-        partition = getattr(self.config, "slurm_partition", "gpu")
-        # Use estimated time from blueprint, default to 1 day
-        estimated_time = compute.get("estimated_time", "1-00:00:00")
+        partition = getattr(self.config, "slurm_partition", "gpu") or "gpu"
+        # Use config slurm_default_time; ignore LLM-estimated time (often too short)
+        estimated_time = getattr(self.config, "slurm_default_time", "30-00:00:00")
         # BUG-17 fix: read conda env from config instead of hardcoding
         conda_env = getattr(self.config, "experiment_conda_env", None)
 
