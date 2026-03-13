@@ -147,6 +147,10 @@ _LLM_THINKING_PATTERNS = [
     # Common LLM preamble / postamble
     re.compile(r'^\s*Here (?:is|are) the (?:LaTeX|content|section|text)\b.*$', re.MULTILINE),
     re.compile(r'^\s*(?:Below is|The following is)\b.*$', re.MULTILINE),
+    # "Given that X, I will proceed/write..." / "Since no X, I will..."
+    re.compile(r'^\s*(?:Given that|Since no|Since the|As the|As no)\b[^.]*(?:I will|I\'ll|we will|we proceed)\b.*$', re.MULTILINE),
+    # "I (?:do not|don't) have..." preambles
+    re.compile(r'^\s*I (?:do not|don\'t) have\b.*$', re.MULTILINE),
 ]
 
 

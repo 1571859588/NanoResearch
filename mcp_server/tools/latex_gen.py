@@ -14,10 +14,12 @@ _TEMPLATES_ROOT = Path(__file__).resolve().parent.parent.parent / "nanoresearch"
 def _get_jinja_env(template_dir: Path | None = None) -> Environment:
     """Create a Jinja2 environment for LaTeX rendering."""
     base_dir = template_dir or _TEMPLATES_ROOT
-    loader = FileSystemLoader([
-        str(base_dir),
-        str(base_dir / "base"),
-    ])
+    # Include all format subdirectories so format-specific templates are found
+    search_dirs = [str(base_dir)]
+    for subdir in sorted(base_dir.iterdir()):
+        if subdir.is_dir() and not subdir.name.startswith(("_", ".")):
+            search_dirs.append(str(subdir))
+    loader = FileSystemLoader(search_dirs)
     env = Environment(
         loader=loader,
         autoescape=select_autoescape([]),  # no HTML escaping for LaTeX

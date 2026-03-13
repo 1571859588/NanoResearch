@@ -386,6 +386,22 @@ class FigureAgent(BaseResearchAgent):
                 validated.append(fig)
             if not validated:
                 return self._default_figure_plan()
+
+            # Enforce max 2 AI images (overview + detail); convert excess to code_chart
+            ai_count = sum(1 for f in validated if f["fig_type"] == "ai_image")
+            if ai_count > 2:
+                self.log(f"Figure plan has {ai_count} AI images, trimming to 2")
+                kept_ai = 0
+                trimmed = []
+                for f in validated:
+                    if f["fig_type"] == "ai_image":
+                        kept_ai += 1
+                        if kept_ai > 2:
+                            self.log(f"  Dropping excess AI image: {f.get('fig_key')}")
+                            continue
+                    trimmed.append(f)
+                validated = trimmed
+
             # Cap at 5 figures max (top-venue standard: 4-5)
             if len(validated) > 5:
                 self.log(f"Figure plan has {len(validated)} figures, trimming to 5")

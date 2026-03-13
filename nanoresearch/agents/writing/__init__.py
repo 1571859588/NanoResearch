@@ -371,7 +371,7 @@ from .context_builder import _ContextBuilderMixin
 from .grounding import _GroundingMixin
 from .section_writer import _SectionWriterMixin
 from .citation_manager import _CitationManagerMixin
-from .latex_assembler import _LaTeXAssemblerMixin
+from .latex_assembler import _LaTeXAssemblerMixin, _strip_llm_thinking
 
 __all__ = ["WritingAgent", "GroundingPacket", "ContributionClaim", "ContributionContract"]
 
@@ -657,7 +657,7 @@ class WritingAgent(
                 if inserted:
                     placed_figures.add(fk)
 
-            sections.append(Section(heading=heading, label=label, content=content))
+            sections.append(Section(heading=heading, label=label, content=_strip_llm_thinking(content)))
             snippet = content[:200].replace("\n", " ").strip()
             prior_sections_summary.append(f"[{heading}]: {snippet}...")
 
