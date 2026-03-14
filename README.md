@@ -56,15 +56,15 @@ Built for **grounded autonomous research**: NanoResearch turns a topic into lite
 
 NanoResearch is a unified research pipeline that automates the full paper-production workflow:
 
-- starts from a research topic
-- searches and synthesizes relevant literature
-- proposes an experiment blueprint
-- generates runnable code and scripts
-- executes locally or on SLURM
-- analyzes real outputs
-- generates figures
-- writes a LaTeX paper draft
-- reviews and revises the result
+- 🔎 starts from a research topic
+- 📚 searches and synthesizes relevant literature
+- 🧪 proposes an experiment blueprint
+- 💻 generates runnable code and scripts
+- ⚙️ executes locally or on SLURM
+- 📈 analyzes real outputs
+- 🖼️ generates figures
+- ✍️ writes a LaTeX paper draft
+- 🧠 reviews and revises the result
 
 It is designed around **resumable workspaces**, **multi-model routing**, and **grounded writing** so that downstream paper content is tied to actual experiment evidence instead of free-form draft generation.
 
@@ -81,11 +81,11 @@ Most "AI paper writers" stop at outlines or prose. NanoResearch is built for a d
 
 ## Use cases
 
-- **Research prototyping** — quickly turn a fresh idea into a full experiment-and-paper workspace
-- **Benchmark generation** — create repeatable topic-to-paper runs across multiple tasks
-- **Autonomous experimentation** — let the system generate code, execute runs, and analyze outputs
-- **Paper drafting from evidence** — produce LaTeX drafts grounded in actual experiment artifacts
-- **Internal research tooling** — use workspaces, manifests, and stage artifacts as an auditable research log
+- 🚀 **Research prototyping** — quickly turn a fresh idea into a full experiment-and-paper workspace
+- 🧪 **Benchmark generation** — create repeatable topic-to-paper runs across multiple tasks
+- 🤖 **Autonomous experimentation** — let the system generate code, execute runs, and analyze outputs
+- 📝 **Paper drafting from evidence** — produce LaTeX drafts grounded in actual experiment artifacts
+- 🗂️ **Internal research tooling** — use workspaces, manifests, and stage artifacts as an auditable research log
 
 ## Showcase
 
@@ -104,12 +104,12 @@ A typical NanoResearch run produces a clean, inspectable workspace containing:
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="figures/fig1_framework.png" alt="Framework figure example" width="95%" />
+      <img src="figures/showcase-framework.png" alt="Framework figure example" width="95%" />
       <br />
       <sub><b>Framework</b></sub>
     </td>
     <td align="center" width="50%">
-      <img src="figures/fig2_main_results_accuracy.png" alt="Main results figure example" width="95%" />
+      <img src="figures/showcase-main-results.png" alt="Main results figure example" width="95%" />
       <br />
       <sub><b>Main Results</b></sub>
     </td>
@@ -119,12 +119,12 @@ A typical NanoResearch run produces a clean, inspectable workspace containing:
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="figures/fig3_sample_complexity_curves.png" alt="Sample complexity figure example" width="95%" />
+      <img src="figures/showcase-sample-complexity.png" alt="Sample complexity figure example" width="95%" />
       <br />
       <sub><b>Sample Complexity</b></sub>
     </td>
     <td align="center" width="50%">
-      <img src="figures/fig4_theory_alignment_analysis.png" alt="Theory alignment figure example" width="95%" />
+      <img src="figures/showcase-theory-analysis.png" alt="Theory alignment figure example" width="95%" />
       <br />
       <sub><b>Theory Analysis</b></sub>
     </td>
@@ -135,11 +135,11 @@ A typical NanoResearch run produces a clean, inspectable workspace containing:
 
 Typical saved artifacts include:
 
-- `manifest.json` for stage state and artifact tracking
-- `papers/` and `plans/` for literature and experiment context
-- `code/` for runnable experiment projects
-- `figures/` for generated visuals
-- exported paper assets such as `paper.tex`, `references.bib`, and `paper.pdf`
+- 📋 `manifest.json` for stage state and artifact tracking
+- 📚 `papers/` and `plans/` for literature and experiment context
+- 💻 `code/` for runnable experiment projects
+- 🖼️ `figures/` for generated visuals
+- 📄 exported paper assets such as `paper.tex`, `references.bib`, and `paper.pdf`
 
 ## Pipeline
 
