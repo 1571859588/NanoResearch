@@ -230,7 +230,7 @@ pip install -e ".[dev]"
 
 ### 2) Configure
 
-Create `~/.nanobot/config.json`:
+Create `~/.nanobot/config.json`. **You must replace `base_url` and `api_key` with your own OpenAI-compatible API endpoint**, and choose models available on your endpoint for each stage:
 
 ```json
 {
@@ -243,45 +243,50 @@ Create `~/.nanobot/config.json`:
     "max_retries": 2,
     "auto_create_env": true,
     "auto_download_resources": true,
-    "ideation": {
-      "model": "deepseek-ai/DeepSeek-V3.2",
-      "temperature": 0.5,
-      "max_tokens": 16384,
-      "timeout": 600.0
-    },
-    "planning": {
-      "model": "deepseek-ai/DeepSeek-V3.2",
-      "temperature": 0.2,
-      "max_tokens": 16384,
-      "timeout": 600.0
-    },
-    "code_gen": {
-      "model": "gpt-5.2-codex",
-      "temperature": null,
-      "max_tokens": 16384,
-      "timeout": 600.0
-    },
-    "writing": {
-      "model": "deepseek-ai/DeepSeek-V3.2",
-      "temperature": 0.4,
-      "max_tokens": 16384,
-      "timeout": 600.0
-    },
+    "ideation":      { "model": "your-model", "temperature": 0.5, "max_tokens": 16384, "timeout": 600.0 },
+    "planning":      { "model": "your-model", "temperature": 0.2, "max_tokens": 16384, "timeout": 600.0 },
+    "code_gen":      { "model": "your-model", "temperature": 0.1, "max_tokens": 16384, "timeout": 600.0 },
+    "writing":       { "model": "your-model", "temperature": 0.4, "max_tokens": 16384, "timeout": 600.0 },
     "figure_gen": {
-      "model": "gemini-3.1-flash-preview-image-generation",
+      "model": "gemini-3.1-flash-image-preview",
       "image_backend": "gemini",
       "temperature": null,
       "timeout": 300.0
     },
-    "review": {
-      "model": "gemini-3.1-flash-lite-preview",
-      "temperature": 0.3,
-      "max_tokens": 16384,
-      "timeout": 300.0
-    }
+    "review":        { "model": "your-model", "temperature": 0.3, "max_tokens": 16384, "timeout": 300.0 }
   }
 }
 ```
+
+#### Recommended models per stage
+
+Each stage has different requirements. Pick models based on your budget and quality needs:
+
+| Stage | Task | Recommended | Budget-friendly |
+|-------|------|-------------|-----------------|
+| `ideation` | Literature search + hypothesis | DeepSeek-V3.2 | DeepSeek-V3.2 |
+| `planning` | Experiment design | Claude Sonnet 4.6 | DeepSeek-V3.2 |
+| `code_gen` | Code generation | GPT-5.2-Codex / Claude Opus 4.6 | DeepSeek-V3.2 |
+| `writing` | LaTeX paper sections | Claude Opus 4.6 / Claude Sonnet 4.6 | DeepSeek-V3.2 |
+| `figure_prompt` | Figure description | GPT-5.2 | DeepSeek-V3.2 |
+| `figure_code` | Chart plotting code | Claude Opus 4.6 | DeepSeek-V3.2 |
+| `figure_gen` | AI architecture diagram | Gemini 3.1 Flash (native image) | Gemini 3.1 Flash |
+| `review` | Paper review + revision | Claude Sonnet 4.6 / Gemini Flash | DeepSeek-V3.2 |
+
+> **Note:** All text models are accessed through a single OpenAI-compatible endpoint. Set `temperature: null` for models that don't support it (e.g., Codex, o-series). The `figure_gen` stage uses the Gemini native image generation API and requires setting `"image_backend": "gemini"`.
+
+#### Estimated cost per run
+
+Costs vary by model choice. Below are rough estimates based on typical API pricing:
+
+| Scenario | Models | Time | Estimated cost |
+|----------|--------|------|---------------|
+| **Draft only** (skip experiments) | All DeepSeek-V3.2 | ~30 min | ~$0.5 - $1 |
+| **Draft only** (skip experiments) | Mixed (Claude writing, DeepSeek others) | ~30 min | ~$3 - $8 |
+| **Full pipeline** (with experiments) | All DeepSeek-V3.2 | 2 - 5 hours | ~$1 - $3 |
+| **Full pipeline** (with experiments) | Mixed (Claude/GPT writing+code, DeepSeek others) | 2 - 5 hours | ~$10 - $20 |
+
+> Execution time for the full pipeline depends on experiment complexity and compute resources (local GPU vs SLURM cluster). The "draft only" mode skips SETUP/CODING/EXECUTION/ANALYSIS stages via `"skip_stages": ["SETUP", "CODING", "EXECUTION", "ANALYSIS"]` in config.
 
 Environment-variable overrides are also supported:
 
