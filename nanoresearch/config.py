@@ -180,7 +180,7 @@ class ResearchConfig(BaseModel):
     # Max tool-call rounds in react mode (each round = one LLM ↔ tool exchange)
     react_max_rounds: int = 80
     # SLURM settings for react mode (auto-detected if empty)
-    slurm_partition: str = "belt_road"      # SLURM partition
+    slurm_partition: str = ""                # SLURM partition (auto-detected if empty)
     slurm_max_gpus: int = 2                 # max GPUs per job
     slurm_default_time: str = "30-00:00:00"  # default wall time (30 days)
     # Container settings for react mode (for clusters with old glibc)

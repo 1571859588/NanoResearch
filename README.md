@@ -566,6 +566,14 @@ Treat it as a strong draft, not a final submission. The system can generate a fu
 - Improve execution robustness across more local and cluster environments
 - Refine figure generation and review-stage quality controls
 
+## Acknowledgements
+
+NanoResearch is inspired by and builds upon ideas from the following projects:
+
+- [The AI Scientist](https://github.com/SakanaAI/AI-Scientist) — Sakana AI's fully automated scientific discovery framework
+- [Agent Laboratory](https://github.com/SamuelSchmidgall/AgentLaboratory) — autonomous research agent for end-to-end paper generation
+- [MLR-Bench](https://github.com/facebookresearch/MLR-Bench) — Meta's benchmark for evaluating AI research agents
+
 ## Citation
 
 If NanoResearch helps your work, cite the repository:
