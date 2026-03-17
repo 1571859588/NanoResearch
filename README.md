@@ -295,7 +295,7 @@ The IDEATION stage uses OpenAlex and Semantic Scholar to search academic papers.
 
 | Service | How to get a key | Config key | Env variable |
 |---------|-----------------|------------|--------------|
-| [OpenAlex](https://docs.openalex.org/how-to-use-the-api/api-key) | Free — register at [openalex.org/users/me](https://openalex.org/users/me) to get a key | `openalex_api_key` | `OPENALEX_API_KEY` |
+| [OpenAlex](https://developers.openalex.org/) | Free — get your key at [openalex.org/settings/api-key](https://openalex.org/settings/api-key) | `openalex_api_key` | `OPENALEX_API_KEY` |
 | [Semantic Scholar](https://www.semanticscholar.org/product/api#api-key) | Free — request at [semanticscholar.org](https://www.semanticscholar.org/product/api#api-key) | `s2_api_key` | `S2_API_KEY` |
 
 Add to `~/.nanobot/config.json`:
