@@ -104,14 +104,14 @@ A typical NanoResearch run produces a clean, inspectable workspace containing:
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="https://github.com/user-attachments/assets/107daa4a-775e-4168-a12a-128b4680141b" alt="Framework figure example" width="95%" />
+      <img src="https://github.com/user-attachments/assets/107daa4a-775e-4168-a12a-128b4680141b" alt="Framework Overview" width="95%" />
       <br />
-      <sub><b>Framework</b></sub>
+      <sub><b>Framework Overview</b></sub>
     </td>
     <td align="center" width="50%">
-      <img src="figures/showcase-main-results.png" alt="Main results figure example" width="95%" />
+      <img src="https://github.com/user-attachments/assets/2491d8ba-c263-4402-b8bb-52e355b5cec1" alt="Examples" width="95%" />
       <br />
-      <sub><b>Main Results</b></sub>
+      <sub><b>Examples</b></sub>
     </td>
   </tr>
 </table>
@@ -119,14 +119,14 @@ A typical NanoResearch run produces a clean, inspectable workspace containing:
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="figures/showcase-sample-complexity.png" alt="Sample complexity figure example" width="95%" />
+      <img src="https://github.com/user-attachments/assets/0498341a-600b-4031-98db-c0d62dbd016d" alt="Results Comparison" width="95%" />
       <br />
-      <sub><b>Sample Complexity</b></sub>
+      <sub><b>Results Comparison</b></sub>
     </td>
     <td align="center" width="50%">
-      <img src="figures/showcase-theory-analysis.png" alt="Theory alignment figure example" width="95%" />
+      <img src="https://github.com/user-attachments/assets/ce930071-176a-4708-a09d-a80e607e68c8" alt="Ablation" width="95%" />
       <br />
-      <sub><b>Theory Analysis</b></sub>
+      <sub><b>Ablation</b></sub>
     </td>
   </tr>
 </table>
