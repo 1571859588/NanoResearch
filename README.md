@@ -119,14 +119,14 @@ A typical NanoResearch run produces a clean, inspectable workspace containing:
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="figures/showcase-sample-complexity.png" alt="Results Comparison" width="95%" />
+      <img src="figures/showcase-sample-complexity.png" alt="Sample complexity figure example" width="95%" />
       <br />
-      <sub><b>Results Comparison</b></sub>
+      <sub><b>Sample Complexity</b></sub>
     </td>
     <td align="center" width="50%">
-      <img src="figures/showcase-theory-analysis.png" alt="Ablation" width="95%" />
+      <img src="figures/showcase-theory-analysis.png" alt="Theory alignment figure example" width="95%" />
       <br />
-      <sub><b>Ablation</b></sub>
+      <sub><b>Theory Analysis</b></sub>
     </td>
   </tr>
 </table>
