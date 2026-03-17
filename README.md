@@ -289,6 +289,33 @@ Environment-variable overrides are also supported:
 - `NANORESEARCH_API_KEY`
 - `NANORESEARCH_TIMEOUT`
 
+#### Literature Search API Keys (optional but recommended)
+
+The IDEATION stage uses OpenAlex and Semantic Scholar to search academic papers. Without API keys the pipeline still works (anonymous access), but rate limits are much lower.
+
+| Service | How to get a key | Config key | Env variable |
+|---------|-----------------|------------|--------------|
+| [OpenAlex](https://docs.openalex.org/how-to-use-the-api/api-key) | Free — register at [openalex.org/users/me](https://openalex.org/users/me) to get a key | `openalex_api_key` | `OPENALEX_API_KEY` |
+| [Semantic Scholar](https://www.semanticscholar.org/product/api#api-key) | Free — request at [semanticscholar.org](https://www.semanticscholar.org/product/api#api-key) | `s2_api_key` | `S2_API_KEY` |
+
+Add to `~/.nanobot/config.json`:
+
+```json
+{
+  "research": {
+    "openalex_api_key": "your-openalex-key",
+    "s2_api_key": "your-s2-key"
+  }
+}
+```
+
+Or export as environment variables:
+
+```bash
+export OPENALEX_API_KEY="your-openalex-key"
+export S2_API_KEY="your-s2-key"
+```
+
 ### 3) Validate config
 
 ```bash
