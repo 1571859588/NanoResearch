@@ -14,7 +14,7 @@ Built for **grounded autonomous research**: NanoResearch turns a topic into lite
 </p>
 
 <p>
-  <a href="https://github.com/OpenRaiser/NanoStudy-dev"><img alt="Repository" src="https://img.shields.io/badge/GitHub-OpenRaiser%2FNanoStudy--dev-181717?logo=github"></a>
+  <a href="https://github.com/OpenRaiser/NanoResearch"><img alt="Repository" src="https://img.shields.io/badge/GitHub-OpenRaiser%2FNanoResearch-181717?logo=github"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
   <img alt="License" src="https://img.shields.io/badge/License-MIT-16A34A">
   <img alt="Pipeline" src="https://img.shields.io/badge/Pipeline-Unified%20Deep-7C3AED">
@@ -22,7 +22,7 @@ Built for **grounded autonomous research**: NanoResearch turns a topic into lite
 </p>
 
 <p>
-  <a href="https://github.com/OpenRaiser/NanoStudy-dev">GitHub Repository</a>
+  <a href="https://github.com/OpenRaiser/NanoResearch">GitHub Repository</a>
 </p>
 </div>
 
@@ -223,8 +223,8 @@ The result is not just a document. It is a full research workspace with saved in
 ### 1) Install
 
 ```bash
-git clone https://github.com/OpenRaiser/NanoStudy-dev.git
-cd NanoStudy-dev
+git clone https://github.com/OpenRaiser/NanoResearch.git
+cd NanoResearch
 pip install -e ".[dev]"
 ```
 
@@ -585,7 +585,7 @@ If NanoResearch helps your work, cite the repository:
   title = {NanoResearch},
   author = {OpenRaiser},
   year = {2026},
-  url = {https://github.com/OpenRaiser/NanoStudy-dev}
+  url = {https://github.com/OpenRaiser/NanoResearch}
 }
 ```
 
