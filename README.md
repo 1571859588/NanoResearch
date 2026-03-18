@@ -3,6 +3,8 @@
 
 # NanoResearch
 
+**English** | [中文](README_zh.md)
+
 **An AI research engine for going from topic → experiments → figures → paper draft.**
 
 Built for **grounded autonomous research**: NanoResearch turns a topic into literature-grounded plans, runnable experiment code, execution artifacts, figures, and a compiled LaTeX paper inside a resumable workspace.
