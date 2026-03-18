@@ -61,7 +61,7 @@ NanoResearch 是一个端到端的自主科研系统。与传统的"AI 写论文
 - [Pipeline](#pipeline)
 - [Key Capabilities](#key-capabilities)
 - [Quick Start](#quick-start)
-- [Claude Code 集成模式](#claude-code-集成模式)
+- [Claude Code Mode](#claude-code-mode)
 - [Execution Profiles](#execution-profiles)
 - [CLI Commands](#cli-commands)
 - [Output Structure](#output-structure)
@@ -299,7 +299,7 @@ nanoresearch resume --workspace ~/.nanobot/workspace/research/{session_id} --ver
 nanoresearch export --workspace ~/.nanobot/workspace/research/{session_id} --output ./my_paper
 ```
 
-## Claude Code 集成模式
+## Claude Code Mode
 
 除了 Python CLI，NanoResearch 还支持通过 **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** 直接驱动研究流水线——**无需配置任何 API Key**。
 
