@@ -38,7 +38,7 @@ outputs/
 *.zip
 
 # NeurIPS raw template (usable copy lives in nanoresearch/templates/)
-templates/
+# templates/
 
 # OS
 .DS_Store
