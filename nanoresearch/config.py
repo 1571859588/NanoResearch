@@ -190,9 +190,9 @@ class ResearchConfig(BaseModel):
 
     @classmethod
     def load(cls, path: Path | None = None) -> "ResearchConfig":
-        """Load config from nanobot config file, then overlay env vars."""
+        """Load config from nanoresearch config file, then overlay env vars."""
         if path is None:
-            path = Path.home() / ".nanobot" / "config.json"
+            path = Path.home() / ".nanoresearch" / "config.json"
 
         research: dict = {}
         if path.is_file():
@@ -239,7 +239,7 @@ class ResearchConfig(BaseModel):
             raise ValueError(
                 "API credentials required. Set NANORESEARCH_BASE_URL and "
                 "NANORESEARCH_API_KEY environment variables, or configure "
-                "them in ~/.nanobot/config.json under 'research'."
+                "them in ~/.nanoresearch/config.json under 'research'."
             )
         return cfg
 

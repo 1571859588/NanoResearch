@@ -233,7 +233,7 @@ def feishu(
     """Launch Feishu bot for triggering NanoResearch pipeline via Feishu messages.
 
     Requires a Feishu app with App ID/Secret configured via
-    FEISHU_APP_ID/FEISHU_APP_SECRET env vars or ~/.nanobot/config.json.
+    FEISHU_APP_ID/FEISHU_APP_SECRET env vars or ~/.nanoresearch/config.json.
     """
     _setup_logging(verbose)
     from nanoresearch.feishu_bot import main as feishu_main
@@ -296,7 +296,7 @@ def select_env(
     python_path = selected["python"]
 
     # Save to config.json
-    cfg_path = config_path or Path.home() / ".nanobot" / "config.json"
+    cfg_path = config_path or Path.home() / ".nanoresearch" / "config.json"
     cfg_data: dict[str, Any] = {}
     if cfg_path.exists():
         try:

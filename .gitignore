@@ -56,7 +56,7 @@ tmp*/
 .test_experiment_*/
 .runner_quote_check_*/
 .smoke_contract_check/
-.nanobot_home/
+.nanoresearch_home/
 
 # Temp scripts
 *.tmp

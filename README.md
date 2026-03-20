@@ -214,7 +214,7 @@ pip install -e ".[dev]"
 
 ### 2) Configure
 
-创建 `~/.nanobot/config.json`。**需替换 `base_url` 和 `api_key` 为你自己的 OpenAI 兼容 API 端点**，并为每个阶段选择可用的模型：
+创建 `~/.nanoresearch/config.json`。**需替换 `base_url` 和 `api_key` 为你自己的 OpenAI 兼容 API 端点**，并为每个阶段选择可用的模型：
 
 ```json
 {
@@ -298,13 +298,13 @@ nanoresearch run --topic "Adaptive Sparse Attention Mechanisms" --format neurips
 ### 5) Resume
 
 ```bash
-nanoresearch resume --workspace ~/.nanobot/workspace/research/{session_id} --verbose
+nanoresearch resume --workspace ~/.nanoresearch/workspace/research/{session_id} --verbose
 ```
 
 ### 6) Export
 
 ```bash
-nanoresearch export --workspace ~/.nanobot/workspace/research/{session_id} --output ./my_paper
+nanoresearch export --workspace ~/.nanoresearch/workspace/research/{session_id} --output ./my_paper
 ```
 
 ## Claude Code Mode
@@ -413,7 +413,7 @@ my_paper/
 完整工作空间（含中间产物）：
 
 ```text
-~/.nanobot/workspace/research/{session_id}/
+~/.nanoresearch/workspace/research/{session_id}/
 ├── manifest.json
 ├── papers/
 ├── plans/
@@ -499,7 +499,7 @@ export FEISHU_APP_ID="cli_xxx"
 export FEISHU_APP_SECRET="xxx"
 ```
 
-或写入 `~/.nanobot/config.json`：
+或写入 `~/.nanoresearch/config.json`：
 
 ```json
 {
@@ -575,7 +575,7 @@ conda install -c conda-forge tectonic
 ## Acknowledgements
 
 - [claude-scholar](https://github.com/Galaxy-Dawn/claude-scholar) — Claude Code 的科研技能扩展
-- [nanobot](https://github.com/HKUDS/nanobot) - nanobot: 轻量级OpenClaw
+- [nanobot](https://github.com/HKUDS/nanobot) — nanobot: 轻量级OpenClaw
 
 ## Star History
 

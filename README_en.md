@@ -207,7 +207,7 @@ The `deep` command is kept as a compatibility alias, and the legacy standard orc
 Every run gets its own workspace under:
 
 ```text
-~/.nanobot/workspace/research/{session_id}
+~/.nanoresearch/workspace/research/{session_id}
 ```
 
 That workspace stores the manifest, stage artifacts, logs, generated code, paper drafts, and exported outputs.
@@ -240,7 +240,7 @@ pip install -e ".[dev]"
 
 ### 2) Configure
 
-Create `~/.nanobot/config.json`. **You must replace `base_url` and `api_key` with your own OpenAI-compatible API endpoint**, and choose models available on your endpoint for each stage:
+Create `~/.nanoresearch/config.json`. **You must replace `base_url` and `api_key` with your own OpenAI-compatible API endpoint**, and choose models available on your endpoint for each stage:
 
 ```json
 {
@@ -313,7 +313,7 @@ The IDEATION stage uses OpenAlex and Semantic Scholar to search academic papers.
 | [OpenAlex](https://developers.openalex.org/) | Free — get your key at [openalex.org/settings/api-key](https://openalex.org/settings/api-key) | `openalex_api_key` | `OPENALEX_API_KEY` |
 | [Semantic Scholar](https://www.semanticscholar.org/product/api#api-key) | Free — request at [semanticscholar.org](https://www.semanticscholar.org/product/api#api-key) | `s2_api_key` | `S2_API_KEY` |
 
-Add to `~/.nanobot/config.json`:
+Add to `~/.nanoresearch/config.json`:
 
 ```json
 {
@@ -346,13 +346,13 @@ nanoresearch run --topic "Adaptive Sparse Attention Mechanisms" --format neurips
 ### 5) Resume if a stage fails
 
 ```bash
-nanoresearch resume --workspace ~/.nanobot/workspace/research/{session_id} --verbose
+nanoresearch resume --workspace ~/.nanoresearch/workspace/research/{session_id} --verbose
 ```
 
 ### 6) Export a clean output folder
 
 ```bash
-nanoresearch export --workspace ~/.nanobot/workspace/research/{session_id} --output ./my_paper
+nanoresearch export --workspace ~/.nanoresearch/workspace/research/{session_id} --output ./my_paper
 ```
 
 ## Claude Code Mode
@@ -466,7 +466,7 @@ export FEISHU_APP_ID="cli_xxx"
 export FEISHU_APP_SECRET="xxx"
 ```
 
-Or add to `~/.nanobot/config.json`:
+Or add to `~/.nanoresearch/config.json`:
 
 ```json
 {
@@ -526,7 +526,7 @@ my_paper/
 A live workspace contains the full intermediate state as well:
 
 ```text
-~/.nanobot/workspace/research/{session_id}/
+~/.nanoresearch/workspace/research/{session_id}/
 ├── manifest.json
 ├── papers/
 ├── plans/
@@ -643,7 +643,7 @@ Treat it as a strong draft, not a final submission. The system can generate a fu
 ## Acknowledgements
 
 - [claude-scholar](https://github.com/Galaxy-Dawn/claude-scholar) — scientific research skills for Claude Code
-- [nanobot](https://github.com/HKUDS/nanobot) - nanobot: The Ultra-Lightweight OpenClaw
+- [nanobot](https://github.com/HKUDS/nanobot) — nanobot: The Ultra-Lightweight OpenClaw
 
 ## Star History
 
