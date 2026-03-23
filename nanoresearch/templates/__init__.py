@@ -4,6 +4,26 @@ import os
 from pathlib import Path
 
 
+def get_style_files(format_name: str) -> list[Path]:
+    """Get style files (.sty, .cls, .bst) for a template format.
+
+    Args:
+        format_name: Name of the format (e.g., 'neurips', 'icml', 'arxiv')
+
+    Returns:
+        List of Path objects for style files in the template directory
+    """
+    templates_dir = Path(__file__).parent
+    template_path = templates_dir / format_name
+    if not template_path.is_dir():
+        return []
+    style_exts = {".sty", ".cls", ".bst"}
+    return sorted(
+        f for f in template_path.iterdir()
+        if f.is_file() and f.suffix.lower() in style_exts
+    )
+
+
 def get_available_formats() -> list[str]:
     """Get list of available template formats.
 

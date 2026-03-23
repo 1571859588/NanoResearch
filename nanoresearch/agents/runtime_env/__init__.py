@@ -241,20 +241,89 @@ class RuntimeEnvironmentManager(
         return "venv", False
 
     def _per_session_env_name(self) -> str:
-        """Deterministic conda env name for the current session.
+        """Generate conda env name with optional prefix and date collision handling.
 
-        Uses ``nanoresearch_{sanitized_label}`` so that resume reuses the
-        same env (idempotent).
+        Priority:
+        1. Use experiment_conda_env_prefix from config if set
+        2. Fallback to sanitized session label
+        3. If env exists, add date suffix (YYYYMMDD) or counter for collision
         """
         import hashlib as _hl
+        from datetime import date
 
-        label = re.sub(r'[^A-Za-z0-9_-]', '_', self._session_label)[:30].strip('_')
-        if not label:
-            label = (
-                _hl.md5(self._session_label.encode()).hexdigest()[:10]
-                if self._session_label else "default"
+        # Build base name
+        prefix = (self.config.experiment_conda_env_prefix or "").strip()
+        if prefix:
+            # User-specified prefix
+            base_name = f"research_{prefix}"
+        else:
+            # Auto-generate from session label
+            label = re.sub(r'[^A-Za-z0-9_-]', '_', self._session_label)[:30].strip('_')
+            if not label:
+                label = (
+                    _hl.md5(self._session_label.encode()).hexdigest()[:10]
+                    if self._session_label else "default"
+                )
+            base_name = f"research_{label}"
+
+        # Check for collision and add suffix if needed
+        # First try to find the conda env path
+        conda_cmd = _find_conda() or "conda"
+        try:
+            result = subprocess.run(
+                [conda_cmd, "env", "list", "--json"],
+                capture_output=True, text=True, timeout=30,
             )
-        return f"nanoresearch_{label}"
+            if result.returncode == 0:
+                envs = json.loads(result.stdout).get("envs", [])
+                # Normalize env path to get env name
+                for env_path in envs:
+                    env_name = Path(env_path).name
+                    if env_name == base_name:
+                        # Collision detected - add date suffix
+                        return self._resolve_env_collision(base_name, envs)
+        except Exception:
+            pass
+
+        return base_name
+
+    def _resolve_env_collision(self, base_name: str, existing_envs: list[str]) -> str:
+        """Resolve name collision by adding date/counter suffix.
+
+        Strategy:
+        - Check if any existing env starts with base_name
+        - If same-day env exists, use counter (base_YYYYMMDD_2, base_YYYYMMDD_3, ...)
+        - If no same-day env, add just date (base_YYYYMMDD)
+        """
+        from datetime import date
+
+        today = date.today().strftime("%Y%m%d")
+        today_prefix = f"{base_name}_{today}"
+
+        # Collect all envs that match base_name or base_YYYYMMDD pattern
+        today_envs = []
+        for env_path in existing_envs:
+            env_name = Path(env_path).name
+            if env_name == base_name:
+                # Base name itself exists (from previous day)
+                return today_prefix
+            if env_name.startswith(f"{base_name}_{today}_"):
+                today_envs.append(env_name)
+
+        if not today_envs:
+            # No same-day collision, use date suffix
+            return today_prefix
+
+        # Find next counter
+        counters = []
+        for env_name in today_envs:
+            # Parse base_YYYYMMDD_N pattern
+            match = re.match(rf"^{re.escape(base_name)}_{today}_(\d+)$", env_name)
+            if match:
+                counters.append(int(match.group(1)))
+
+        next_counter = max(counters, default=1) + 1
+        return f"{base_name}_{today}_{next_counter}"
 
     # ------------------------------------------------------------------
     # Per-session conda environment

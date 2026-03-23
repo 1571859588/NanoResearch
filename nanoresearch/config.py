@@ -153,6 +153,13 @@ class ResearchConfig(BaseModel):
     # Takes priority over environment_backend auto-detection.
     experiment_conda_env: str = ""  # e.g., "shixun"
 
+    # Prefix for auto-generated per-session conda env names.
+    # If empty, auto-generate from session label.
+    # If set, uses "nanoresearch_{prefix}" format.
+    # Collision handling: if env exists, adds date suffix (YYYYMMDD) or counter.
+    # e.g., "sapi_cbm" → "nanoresearch_sapi_cbm_20260323"
+    experiment_conda_env_prefix: str = ""  # e.g., "sapi_cbm"
+
     # Point to a user-managed Python environment. Accepts:
     #   - python executable path:  "D:/anaconda/envs/myenv/python.exe"
     #   - environment directory:   "D:/projects/.venv"  (auto-finds python inside)
