@@ -48,7 +48,7 @@ app = typer.Typer(
 )
 console = Console()
 
-_DEFAULT_ROOT = Path.home() / ".nanoresearch" / "workspace" / "research"
+_DEFAULT_ROOT = Path("/mnt/public/sichuan_a/nyt/ai/NanoResearch/workspaces")
 
 
 def _version_callback(value: bool) -> None:

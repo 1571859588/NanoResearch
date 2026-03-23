@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
+DEFAULT_MODEL = "Qwen3.5-35B-A3B"
 
 
 class ExecutionProfile(str, Enum):
@@ -58,24 +58,24 @@ class ResearchConfig(BaseModel):
 
     ideation: StageModelConfig = Field(
         default_factory=lambda: StageModelConfig(
-            model="deepseek-ai/DeepSeek-V3.2", temperature=0.5,
+            model="Qwen3.5-35B-A3B", temperature=0.5,
             max_tokens=16384, timeout=600.0,
         )
     )
     planning: StageModelConfig = Field(
         default_factory=lambda: StageModelConfig(
-            model="deepseek-ai/DeepSeek-V3.2", temperature=0.2,
+            model="Qwen3.5-35B-A3B", temperature=0.2,
             max_tokens=16384, timeout=600.0,
         )
     )
     experiment: StageModelConfig = Field(
         default_factory=lambda: StageModelConfig(
-            model="deepseek-ai/DeepSeek-V3.2", temperature=0.1, timeout=600.0
+            model="Qwen3.5-35B-A3B", temperature=0.1, timeout=600.0
         )
     )
     writing: StageModelConfig = Field(
         default_factory=lambda: StageModelConfig(
-            model="deepseek-ai/DeepSeek-V3.2", temperature=0.4,
+            model="Qwen3.5-35B-A3B", temperature=0.4,
             max_tokens=16384, timeout=600.0,
         )
     )
@@ -107,7 +107,7 @@ class ResearchConfig(BaseModel):
     )
     evidence_extraction: StageModelConfig = Field(
         default_factory=lambda: StageModelConfig(
-            model="deepseek-ai/DeepSeek-V3.2",
+            model="Qwen3.5-35B-A3B",
             temperature=0.1,
         )
     )
