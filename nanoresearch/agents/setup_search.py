@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import logging
 import os
 import re
 import shlex
 import shutil
+import tarfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -169,6 +172,79 @@ Return JSON:
 
         result = await self.generate_json(system_prompt, user_prompt)
         return result if isinstance(result, dict) else {}
+
+    async def _extract_archive(self, archive_path: Path, extract_dir: Path) -> str:
+        """Extract archive and return the path to extracted content.
+
+        Supports: .tar.gz, .tgz, .tar.bz2, .tar.xz, .zip, .gz
+        Returns the path to the extracted data (directory or file).
+        """
+        archive_name = archive_path.name.lower()
+
+        # Create extract directory
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        # Handle .tar.gz and .tgz
+        if archive_name.endswith(".tar.gz") or archive_name.endswith(".tgz"):
+            extract_path = extract_dir / archive_path.stem  # Remove .tar.gz
+            extract_path.mkdir(parents=True, exist_ok=True)
+            try:
+                with tarfile.open(archive_path, "r:gz") as tar:
+                    tar.extractall(path=extract_path)
+                self.log(f"Extracted: {archive_path.name} -> {extract_path.name}/")
+                return str(extract_path)
+            except Exception as e:
+                logger.warning(f"Failed to extract {archive_path}: {e}")
+
+        # Handle .tar.bz2
+        elif archive_name.endswith(".tar.bz2"):
+            extract_path = extract_dir / archive_path.stem  # Remove .tar.bz2
+            extract_path.mkdir(parents=True, exist_ok=True)
+            try:
+                with tarfile.open(archive_path, "r:bz2") as tar:
+                    tar.extractall(path=extract_path)
+                self.log(f"Extracted: {archive_path.name} -> {extract_path.name}/")
+                return str(extract_path)
+            except Exception as e:
+                logger.warning(f"Failed to extract {archive_path}: {e}")
+
+        # Handle .tar.xz
+        elif archive_name.endswith(".tar.xz") or archive_name.endswith(".txz"):
+            extract_path = extract_dir / archive_path.stem  # Remove .tar.xz
+            extract_path.mkdir(parents=True, exist_ok=True)
+            try:
+                with tarfile.open(archive_path, "r:xz") as tar:
+                    tar.extractall(path=extract_path)
+                self.log(f"Extracted: {archive_path.name} -> {extract_path.name}/")
+                return str(extract_path)
+            except Exception as e:
+                logger.warning(f"Failed to extract {archive_path}: {e}")
+
+        # Handle .gz (single file decompression)
+        elif archive_name.endswith(".gz") and not archive_name.endswith(".tar.gz"):
+            decompressed = extract_dir / archive_path.stem  # Remove .gz
+            try:
+                with gzip.open(archive_path, "rb") as f_in:
+                    with open(decompressed, "wb") as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+                self.log(f"Decompressed: {archive_path.name} -> {decompressed.name}")
+                return str(decompressed)
+            except Exception as e:
+                logger.warning(f"Failed to decompress {archive_path}: {e}")
+
+        # Handle .zip
+        elif archive_name.endswith(".zip"):
+            try:
+                with zipfile.ZipFile(archive_path, "r") as zip_ref:
+                    zip_ref.extractall(extract_dir)
+                self.log(f"Extracted: {archive_path.name} -> {extract_dir.name}/")
+                return str(extract_dir)
+            except zipfile.BadZipFile as e:
+                logger.warning(f"Not a valid zip file: {archive_path}: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to extract {archive_path}: {e}")
+
+        return str(archive_path)
 
     async def _download_resources(
         self, search_plan: dict, data_dir: Path, models_dir: Path
@@ -352,27 +428,47 @@ Return JSON:
             if not url:
                 continue
 
-            # Check if already cached
+            # Check if already cached (including compressed versions)
             if filename:
                 cached_file = data_dir / filename
-                decompressed_name = filename[:-3] if filename.endswith(".gz") else filename
-                cached_decompressed = data_dir / decompressed_name
-                if cached_decompressed.exists() and cached_decompressed.stat().st_size > 0:
-                    self.log(f"Dataset already cached: {name} -> {cached_decompressed.name}")
-                    downloaded.append({
-                        "name": name, "type": "dataset",
-                        "path": str(cached_decompressed),
-                        "status": "downloaded", "cached": True,
-                    })
-                    continue
-                if cached_file.exists() and cached_file.stat().st_size > 0:
-                    self.log(f"Dataset already cached: {name} -> {cached_file.name}")
-                    downloaded.append({
-                        "name": name, "type": "dataset",
-                        "path": str(cached_file),
-                        "status": "downloaded", "cached": True,
-                    })
-                    continue
+                decompressed_paths = self._get_decompressed_paths(filename)
+                cached_decompressed = None
+
+                for decompressed_name in decompressed_paths:
+                    cached_decompressed = data_dir / decompressed_name
+                    if cached_decompressed.exists() and cached_decompressed.stat().st_size > 0:
+                        if cached_decompressed.is_dir():
+                            # Check if directory has content
+                            if any(cached_decompressed.iterdir()):
+                                self.log(f"Dataset already cached: {name} -> {cached_decompressed.name}/")
+                                downloaded.append({
+                                    "name": name, "type": "dataset",
+                                    "path": str(cached_decompressed),
+                                    "status": "downloaded", "cached": True,
+                                })
+                                cached_decompressed = None
+                                break
+                        else:
+                            self.log(f"Dataset already cached: {name} -> {cached_decompressed.name}")
+                            downloaded.append({
+                                "name": name, "type": "dataset",
+                                "path": str(cached_decompressed),
+                                "status": "downloaded", "cached": True,
+                            })
+                            cached_decompressed = None
+                            break
+
+                # File exists but not yet decompressed (only check if no archive found)
+                if cached_decompressed is None and cached_file.exists() and cached_file.stat().st_size > 0:
+                    name_lower = filename.lower()
+                    if not any(name_lower.endswith(s) for s in [".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".txz", ".gz", ".zip"]):
+                        self.log(f"Dataset already cached: {name} -> {cached_file.name}")
+                        downloaded.append({
+                            "name": name, "type": "dataset",
+                            "path": str(cached_file),
+                            "status": "downloaded", "cached": True,
+                        })
+                        continue
 
             self.log(f"Downloading dataset: {name}")
 
@@ -413,11 +509,28 @@ Return JSON:
                         f"cd {shlex.quote(str(data_dir))} && {sanitized_dl}", timeout=600
                     )
                     dl_files = list(data_dir.glob("*"))
-                    downloaded.append({
-                        "name": name, "type": "dataset",
-                        "path": str(data_dir), "status": "downloaded",
-                        "files": [f.name for f in dl_files],
-                    })
+
+                    # Check if downloaded a single archive file and extract it
+                    extracted_path = None
+                    for dl_file in dl_files:
+                        if dl_file.is_file():
+                            name_lower = dl_file.name.lower()
+                            if any(name_lower.endswith(s) for s in [".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".txz", ".gz", ".zip"]):
+                                extracted_path = await self._extract_archive(dl_file, data_dir)
+                                break
+
+                    if extracted_path:
+                        downloaded.append({
+                            "name": name, "type": "dataset",
+                            "path": extracted_path, "status": "downloaded",
+                            "extracted_from": str(dl_file),
+                        })
+                    else:
+                        downloaded.append({
+                            "name": name, "type": "dataset",
+                            "path": str(data_dir), "status": "downloaded",
+                            "files": [f.name for f in dl_files],
+                        })
                     self.log(f"Downloaded dataset: {name}")
                 except Exception as e:
                     self.log(f"Failed to download dataset {name}: {e}")
@@ -434,26 +547,19 @@ Return JSON:
                         f"wget -q -O {shlex.quote(str(dest_file))} {shlex.quote(url)}", timeout=600
                     )
                     if dest_file.exists() and dest_file.stat().st_size > 0:
-                        if filename.endswith(".gz") and not filename.endswith(".tar.gz"):
-                            decompressed = data_dir / filename[:-3]
-                            try:
-                                with gzip.open(dest_file, 'rb') as f_in:
-                                    with open(decompressed, 'wb') as f_out:
-                                        shutil.copyfileobj(f_in, f_out)
-                                self.log(f"Decompressed: {filename} -> {decompressed.name}")
-                                downloaded.append({
-                                    "name": name, "type": "dataset",
-                                    "path": str(decompressed),
-                                    "compressed_path": str(dest_file),
-                                    "status": "downloaded",
-                                })
-                            except Exception:
-                                downloaded.append({
-                                    "name": name, "type": "dataset",
-                                    "path": str(dest_file),
-                                    "status": "downloaded",
-                                })
+                        # Try to extract archive
+                        extracted_path = await self._extract_archive(dest_file, data_dir)
+
+                        if extracted_path != str(dest_file):
+                            # Successfully extracted
+                            downloaded.append({
+                                "name": name, "type": "dataset",
+                                "path": extracted_path,
+                                "compressed_path": str(dest_file),
+                                "status": "downloaded",
+                            })
                         else:
+                            # Not an archive or extraction failed
                             downloaded.append({
                                 "name": name, "type": "dataset",
                                 "path": str(dest_file),
@@ -473,6 +579,43 @@ Return JSON:
                     })
 
         return downloaded
+
+    @staticmethod
+    def _get_decompressed_paths(filename: str) -> list[str]:
+        """Get list of possible decompressed filenames for a given archive.
+
+        Returns paths in order of preference for matching.
+        """
+        name = filename.lower()
+        paths = []
+
+        # .tar.gz / .tgz -> remove .tar.gz or .tgz
+        if name.endswith(".tar.gz"):
+            paths.append(filename[:-7])  # Remove .tar.gz
+        elif name.endswith(".tgz"):
+            paths.append(filename[:-4])  # Remove .tgz
+
+        # .tar.bz2 -> remove .tar.bz2
+        elif name.endswith(".tar.bz2"):
+            paths.append(filename[:-8])  # Remove .tar.bz2
+
+        # .tar.xz / .txz -> remove .tar.xz or .txz
+        elif name.endswith(".tar.xz"):
+            paths.append(filename[:-7])  # Remove .tar.xz
+        elif name.endswith(".txz"):
+            paths.append(filename[:-4])  # Remove .txz
+
+        # .gz (not tar.gz) -> remove .gz
+        elif name.endswith(".gz"):
+            paths.append(filename[:-3])  # Remove .gz
+
+        # .zip -> directory name or first file name
+        elif name.endswith(".zip"):
+            # Try extracting directory name
+            base = filename[:-4]  # Remove .zip
+            paths.append(base)
+
+        return paths
 
     # ------------------------------------------------------------------
     # GitHub dataset repo handling

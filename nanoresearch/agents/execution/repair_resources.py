@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import tarfile
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -306,10 +307,111 @@ class _RepairResourcesMixin:
             target_path = Path(target_text)
             if target_path.exists():
                 continue
-            if target_path.suffix.lower() in {".gz", ".bz2", ".xz", ".zip"}:
-                continue
 
             normalized_key = cls._normalized_resource_key(target_text)
+
+            # Try .tar.gz / .tgz
+            tar_gz_matches = [
+                item
+                for item in candidates
+                if Path(item["path"]).is_file()
+                and item.get("normalized_key") == normalized_key
+                and item["path"].lower().endswith(".tar.gz")
+            ]
+            extracted = False
+            for tar_gz_candidate in tar_gz_matches[:5]:
+                source_path = Path(tar_gz_candidate["path"])
+                try:
+                    extract_dir = target_path.parent
+                    extract_dir.mkdir(parents=True, exist_ok=True)
+                    with tarfile.open(source_path, "r:gz") as tar:
+                        tar.extractall(path=extract_dir)
+                    created.append(str(extract_dir))
+                    extracted = True
+                    logger.debug(f"Extracted .tar.gz: {source_path.name} -> {extract_dir.name}/")
+                    break
+                except (OSError, tarfile.TarError):
+                    continue
+
+            if extracted:
+                continue
+
+            # Try .tgz
+            tgz_matches = [
+                item
+                for item in candidates
+                if Path(item["path"]).is_file()
+                and item.get("normalized_key") == normalized_key
+                and item["path"].lower().endswith(".tgz")
+            ]
+            for tgz_candidate in tgz_matches[:5]:
+                source_path = Path(tgz_candidate["path"])
+                try:
+                    extract_dir = target_path.parent
+                    extract_dir.mkdir(parents=True, exist_ok=True)
+                    with tarfile.open(source_path, "r:gz") as tar:
+                        tar.extractall(path=extract_dir)
+                    created.append(str(extract_dir))
+                    extracted = True
+                    logger.debug(f"Extracted .tgz: {source_path.name} -> {extract_dir.name}/")
+                    break
+                except (OSError, tarfile.TarError):
+                    continue
+
+            if extracted:
+                continue
+
+            # Try .tar.bz2
+            tar_bz2_matches = [
+                item
+                for item in candidates
+                if Path(item["path"]).is_file()
+                and item.get("normalized_key") == normalized_key
+                and item["path"].lower().endswith(".tar.bz2")
+            ]
+            for tar_bz2_candidate in tar_bz2_matches[:5]:
+                source_path = Path(tar_bz2_candidate["path"])
+                try:
+                    extract_dir = target_path.parent
+                    extract_dir.mkdir(parents=True, exist_ok=True)
+                    with tarfile.open(source_path, "r:bz2") as tar:
+                        tar.extractall(path=extract_dir)
+                    created.append(str(extract_dir))
+                    extracted = True
+                    logger.debug(f"Extracted .tar.bz2: {source_path.name} -> {extract_dir.name}/")
+                    break
+                except (OSError, tarfile.TarError):
+                    continue
+
+            if extracted:
+                continue
+
+            # Try .tar.xz / .txz
+            tar_xz_matches = [
+                item
+                for item in candidates
+                if Path(item["path"]).is_file()
+                and item.get("normalized_key") == normalized_key
+                and (item["path"].lower().endswith(".tar.xz") or item["path"].lower().endswith(".txz"))
+            ]
+            for tar_xz_candidate in tar_xz_matches[:5]:
+                source_path = Path(tar_xz_candidate["path"])
+                try:
+                    extract_dir = target_path.parent
+                    extract_dir.mkdir(parents=True, exist_ok=True)
+                    with tarfile.open(source_path, "r:xz") as tar:
+                        tar.extractall(path=extract_dir)
+                    created.append(str(extract_dir))
+                    extracted = True
+                    logger.debug(f"Extracted .tar.xz/.txz: {source_path.name} -> {extract_dir.name}/")
+                    break
+                except (OSError, tarfile.TarError):
+                    continue
+
+            if extracted:
+                continue
+
+            # Try .gz (single file, not tar.gz)
             gz_matches = [
                 item
                 for item in candidates
@@ -330,6 +432,7 @@ class _RepairResourcesMixin:
                     created.append(str(target_path))
                     continue
 
+            # Try .zip
             zip_matches = [
                 item
                 for item in candidates

@@ -35,8 +35,8 @@ class _CondaMixin:
 
         Steps:
         1. Check if env already exists (resume idempotency).
-        2. Create bare env with Python 3.11.
-        3. If GPU detected → ``_install_torch_conda()``.
+        2. Clone from experiment_clone_source if configured, else create bare env.
+        3. If GPU detected and not cloned → ``_install_torch_conda()``.
         4. ``install_requirements()`` for remaining pip deps.
         5. ``validate_runtime()``.
         """
@@ -51,30 +51,23 @@ class _CondaMixin:
         if conda_python:
             self._log(f"Reusing existing conda env '{env_name}': {conda_python}")
         else:
-            # 2. Create bare env
-            self._log(f"Creating per-session conda env '{env_name}' via {cmd} ...")
-            loop = asyncio.get_running_loop()
-            try:
-                proc = await loop.run_in_executor(
-                    None,
-                    lambda: subprocess.run(
-                        [cmd, "create", "-y", "-n", env_name, "python=3.11"],
-                        capture_output=True, text=True, timeout=600,
-                    ),
+            # 2. Clone from source env if configured
+            clone_source = (self.config.experiment_clone_source or "").strip()
+            if clone_source:
+                freshly_created = await self._clone_conda_env(
+                    env_name, clone_source, cmd
                 )
-                if proc.returncode != 0:
-                    stderr = (proc.stderr or "").strip()[:500]
-                    self._log(f"Conda env creation failed: {stderr}")
-                    return {}  # signal failure — caller falls back to venv
-            except Exception as exc:
-                self._log(f"Conda env creation error: {exc}")
-                return {}
+            else:
+                # Create bare env
+                freshly_created = await self._create_bare_conda_env(env_name, cmd)
+
+            if not freshly_created:
+                return {}  # signal failure
 
             conda_python = self.find_conda_python(env_name)
             if not conda_python:
                 self._log(f"Could not locate Python in new conda env '{env_name}'")
                 return {}
-            freshly_created = True
             self._log(f"Conda env '{env_name}' created (python: {conda_python})")
 
         # 3. GPU-aware torch installation via conda
@@ -264,6 +257,60 @@ class _CondaMixin:
             if python_path.exists():
                 return str(python_path)
         return None
+
+    async def _create_bare_conda_env(self, env_name: str, cmd: str) -> bool:
+        """Create a bare conda environment with Python 3.11."""
+        self._log(f"Creating bare conda env '{env_name}' via {cmd} ...")
+        loop = asyncio.get_running_loop()
+        try:
+            proc = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    [cmd, "create", "-y", "-n", env_name, "python=3.11"],
+                    capture_output=True, text=True, timeout=600,
+                ),
+            )
+            if proc.returncode != 0:
+                stderr = (proc.stderr or "").strip()[:500]
+                self._log(f"Conda env creation failed: {stderr}")
+                return False
+            self._log(f"Conda env '{env_name}' created (bare)")
+            return True
+        except Exception as exc:
+            self._log(f"Conda env creation error: {exc}")
+            return False
+
+    async def _clone_conda_env(self, env_name: str, source_env: str, cmd: str) -> bool:
+        """Clone an existing conda environment.
+
+        Uses `conda create --clone <source> -n <new_name>` to copy
+        an existing environment (including all packages and CUDA deps).
+        """
+        self._log(f"Cloning conda env '{source_env}' → '{env_name}' ...")
+
+        # Verify source env exists
+        if not self.find_conda_python(source_env):
+            self._log(f"Source conda env '{source_env}' not found, cannot clone")
+            return False
+
+        loop = asyncio.get_running_loop()
+        try:
+            proc = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    [cmd, "create", "-y", "--clone", source_env, "-n", env_name],
+                    capture_output=True, text=True, timeout=1800,
+                ),
+            )
+            if proc.returncode == 0:
+                self._log(f"Conda env '{env_name}' cloned from '{source_env}'")
+                return True
+            stderr = (proc.stderr or "").strip()[:500]
+            self._log(f"Failed to clone conda env: {stderr}")
+            return False
+        except Exception as exc:
+            self._log(f"Conda env clone error: {exc}")
+            return False
 
     async def create_conda_env(self, env_name: str, code_dir: Path) -> bool:
         """Create a conda environment when requested and missing."""

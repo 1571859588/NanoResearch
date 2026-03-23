@@ -153,6 +153,13 @@ class ResearchConfig(BaseModel):
     # Takes priority over environment_backend auto-detection.
     experiment_conda_env: str = ""  # e.g., "shixun"
 
+    # Clone an existing conda environment as base.
+    # When set, creates a new env by cloning from the specified source env.
+    # This is useful for copying pre-configured GPU/CUDA environments.
+    # Example: experiment_clone_source = "nyt" creates "nanoresearch_{topic}"
+    # by cloning from "nyt" env.
+    experiment_clone_source: str = ""  # e.g., "nyt"
+
     # Prefix for auto-generated per-session conda env names.
     # If empty, auto-generate from session label.
     # If set, uses "nanoresearch_{prefix}" format.
