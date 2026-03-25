@@ -672,7 +672,7 @@ class SetupAgent(_SetupSearchMixin, _SetupGithubMixin, BaseResearchAgent):
                 f"You are a data curation expert. Please write a comprehensive `{md_name}` for this resource "
                 f"called '{r.get('name', 'unknown')}'. Describe its logical functionality, structural outline, "
                 f"and contents based on the provided README, metadata snippets, and directory tree. "
-                f"Ensure anyone can understand what {"dataset" if res_type == "DATASET" else "model"} this is and how to use it just by reading the markdown. "
+                f"Ensure anyone can understand what {'dataset' if res_type == 'DATASET' else 'model'} this is and how to use it just by reading the markdown. "
                 "Output STRICTLY the raw markdown content without enclosing JSON or JSON codeblocks."
             )
             
