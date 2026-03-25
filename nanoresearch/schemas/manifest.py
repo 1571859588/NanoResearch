@@ -185,3 +185,7 @@ class WorkspaceManifest(BaseModel):
     config_snapshot: dict = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Per-project local resource paths for models and datasets
+    # These paths are checked BEFORE global local_resource_paths and BEFORE downloading
+    # Useful when you copy missing dataset/model files into the project's work directory
+    local_resource_paths: list[str] = Field(default_factory=list)

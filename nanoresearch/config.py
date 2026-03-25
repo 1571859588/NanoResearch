@@ -175,6 +175,35 @@ class ResearchConfig(BaseModel):
     # Takes highest priority over all other environment settings.
     experiment_python: str = ""
 
+    # Local resource paths for models and datasets.
+    # These directories are checked BEFORE downloading from the internet.
+    # Useful when you already have models/datasets downloaded locally.
+    # Format: list of paths, e.g., ["/path/to/models", "/path/to/datasets"]
+    local_resource_paths: list[str] = Field(default_factory=list)
+    # Priority order: local_resource_paths > cache > download
+    # If a file exists in any local path, it will be used instead of downloading.
+
+    # LLM-based verification of local resources
+    # When enabled, the LLM reads README/description files to verify that
+    # local resources actually match the project requirements (names may not match content).
+    # Set to false to use simple name-based matching only (faster, but less accurate).
+    # TEMP: Disabled by default due to LLM empty response issues
+    verify_local_resources_with_llm: bool = False
+
+    # Auto-scan default local resource directories
+    # When enabled, automatically checks these directories for missing resources:
+    # - local_datasets_dir / "datasets"
+    # - local_datasets_dir / "models"
+    # Default: ~/.nanoresearch/local_datasets and ~/.nanoresearch/local_models
+    # You can customize these paths in config.json if ~/ has no space
+    # Example: {"local_datasets_dir": "/mnt/public/sichuan_a/nyt/ai/NanoResearch/local_data"}
+    local_datasets_dir: str = ""  # If empty, defaults to ~/.nanoresearch/local_datasets
+    local_models_dir: str = ""    # If empty, defaults to ~/.nanoresearch/local_models
+
+    # Legacy setting: auto_scan_local_resources (deprecated, use local_datasets_dir/local_models_dir instead)
+    # When enabled and local_datasets_dir/local_models_dir are empty, uses default ~/.nanoresearch paths
+    auto_scan_local_resources: bool = True
+
     # Multi-model review committee (optional).
     # Each entry: {"role": str, "focus": str, "model": str,
     #              "base_url": str|None, "api_key": str|None, "weight": float}

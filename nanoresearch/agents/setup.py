@@ -402,5 +402,27 @@ Return a JSON object with:
   ]
 }}"""
 
-        result = await self.generate_json(system_prompt, user_prompt)
-        return result if isinstance(result, dict) else {}
+        try:
+            result = await self.generate_json(system_prompt, user_prompt)
+        except Exception as e:
+            self.log(f"ERROR: generate_json failed: {e}")
+            # Return a minimal valid search plan as fallback
+            return {
+                "github_queries": [f"{topic} related code"],
+                "target_repos": [],
+                "pretrained_models": [],
+                "datasets": blueprint.get("datasets", []),
+            }
+
+        # Handle empty or invalid response
+        if not result or not isinstance(result, dict):
+            self.log(f"WARNING: _plan_search returned empty/invalid result: {result}")
+            # Return a minimal valid search plan as fallback
+            return {
+                "github_queries": [f"{topic} related code"],
+                "target_repos": [],
+                "pretrained_models": [],
+                "datasets": blueprint.get("datasets", []),
+            }
+
+        return result

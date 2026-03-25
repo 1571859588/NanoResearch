@@ -31,7 +31,10 @@ class _WorkspaceExportMixin:
         name = f"nanoresearch_{slug}_{self.manifest.session_id[:8]}"
 
         if output_dir is None:
-            output_dir = Path.cwd()
+            # Export to project root (parent of workspaces directory),
+            # NOT inside the workspace itself
+            project_root = self.path.parent.parent
+            output_dir = project_root
         dest = output_dir / name
 
         if dest.exists():

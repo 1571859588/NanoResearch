@@ -174,6 +174,8 @@ def _extract_json_candidates(text: str) -> list[str]:
     """Return likely JSON substrings from raw LLM output."""
     stripped = text.strip()
     if not stripped:
+        # Log warning for empty responses
+        logger.warning("LLM returned empty response - text is empty or whitespace only")
         return []
 
     candidates: list[str] = []

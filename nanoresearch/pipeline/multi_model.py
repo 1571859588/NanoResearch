@@ -247,11 +247,12 @@ class ModelDispatcher(_MultiModelHelpersMixin):
         self._apply_completion_limit(kwargs, config, is_thinking)
         if config.temperature is not None and not is_thinking:
             kwargs["temperature"] = config.temperature
-        if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
+        # Note: Removed response_format=json_object - use prompt-based JSON formatting
+        # Instead, we prompt the model to use ```json ... ``` format
 
         loop = asyncio.get_running_loop()
         last_exc: Exception | None = None
+        json_mode_enabled = json_mode  # Track if json_mode was originally enabled
         for attempt in range(MAX_API_RETRIES + 1):
             t0 = time.monotonic()
             try:
@@ -267,6 +268,19 @@ class ModelDispatcher(_MultiModelHelpersMixin):
                 content = self._strip_think_blocks(
                     response.choices[0].message.content or ""
                 )
+
+                # Check for empty content in json_mode - retry without response_format
+                if json_mode_enabled and not content.strip():
+                    logger.warning(
+                        "LLM returned empty content with json_mode (attempt %d/%d), "
+                        "falling back to non-JSON mode",
+                        attempt + 1, MAX_API_RETRIES + 1,
+                    )
+                    # Remove response_format and retry
+                    kwargs.pop("response_format", None)
+                    json_mode_enabled = False
+                    continue
+
                 usage = self._extract_usage(response)
                 result = LLMResult(
                     content=content, usage=usage,
@@ -284,6 +298,7 @@ class ModelDispatcher(_MultiModelHelpersMixin):
                         "Proxy doesn't support response_format=json_object, falling back to prompt-only JSON mode"
                     )
                     kwargs.pop("response_format", None)
+                    json_mode_enabled = False
                     continue
                 if attempt < MAX_API_RETRIES and self._is_retryable(exc):
                     delay = RETRY_BASE_DELAY * (RETRY_BACKOFF ** attempt)

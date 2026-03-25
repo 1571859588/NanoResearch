@@ -103,31 +103,55 @@ class BaseResearchAgent(ABC):
         """Call LLM and parse the response as JSON.
 
         Handles LaTeX backslash sequences that break strict JSON parsing.
+        Also handles markdown code block format ```json ... ```.
+
+        Uses prompt-based JSON formatting instead of response_format parameter
+        to avoid compatibility issues with some models.
         """
         raw = await self.generate(
-            system_prompt, user_prompt, json_mode=True,
+            system_prompt, user_prompt, json_mode=False,  # Don't use response_format
             stage_override=stage_override,
         )
+
+        # Handle empty response immediately
+        if not raw or not raw.strip():
+            logger.error("LLM returned empty response for json generation")
+            raise LLMError(
+                "LLM output is empty (no response from model). "
+                f"Raw output: {raw!r}"
+            )
+
         last_attempt = raw.strip()
+
+        # First, try to extract JSON from markdown code blocks
         for text in _extract_json_candidates(raw):
+            logger.debug("Trying JSON candidate (length %d): %s...", len(text), text[:50])
             last_attempt = text
             try:
-                return json.loads(text)
+                result = json.loads(text)
+                logger.debug("Successfully parsed JSON (direct)")
+                return result
             except json.JSONDecodeError:
                 pass
 
+            # Try fixing JSON escapes
             fixed = _fix_json_escapes(text)
             last_attempt = fixed
             try:
-                return json.loads(fixed, strict=False)
+                result = json.loads(fixed, strict=False)
+                logger.debug("Successfully parsed JSON (fixed escapes)")
+                return result
             except json.JSONDecodeError:
                 pass
 
+            # Try repairing truncated JSON
             repaired = _repair_truncated_json(fixed)
             if repaired is not None and repaired != fixed:
                 last_attempt = repaired
                 try:
-                    return json.loads(repaired, strict=False)
+                    result = json.loads(repaired, strict=False)
+                    logger.debug("Successfully parsed JSON (repaired)")
+                    return result
                 except json.JSONDecodeError:
                     pass
 
@@ -136,6 +160,7 @@ class BaseResearchAgent(ABC):
             "JSON parse failed even after escape fixing. First 500 chars: %s",
             last_attempt[:500],
         )
+        logger.error("Raw LLM response (first 500 chars): %s", raw[:500])
         raise LLMError(
             f"LLM output is not valid JSON: "
             f"{_json_error_msg(last_attempt)}. "
