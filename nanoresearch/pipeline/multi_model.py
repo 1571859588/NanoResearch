@@ -35,7 +35,7 @@ RETRY_BACKOFF = RETRY_BACKOFF_FACTOR  # backward compat alias
 # Exceptions worth retrying (strings matched in error message)
 _RETRYABLE_PATTERNS = (
     "timeout", "timed out", "rate limit", "429", "502", "503", "504",
-    "connection", "server error", "overloaded", "capacity",
+    "connection", "server error", "overloaded", "capacity", "empty response",
 )
 
 
@@ -286,6 +286,10 @@ class ModelDispatcher(_MultiModelHelpersMixin):
                     kwargs.pop("response_format", None)
                     json_mode_enabled = False
                     continue
+                
+                # Check for empty content globally
+                if not content.strip():
+                    raise RuntimeError(f"LLM returned an empty response. This usually indicates an API overload or timeout (model={config.model})")
 
                 usage = self._extract_usage(response)
                 result = LLMResult(

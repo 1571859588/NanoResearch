@@ -128,12 +128,18 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
         )
         self.log(f"Code plan: {len(code_plan.get('files', []))} files")
 
-        # Step 2: Generate each file (parallel for speed)
+        # Step 2: Generate each file (parallel for speed with limit)
         valid_specs = [s for s in code_plan.get("files", []) if isinstance(s, dict) and s.get("path")]
-        self.log(f"  Generating {len(valid_specs)} files in parallel")
+        
+        # Limit concurrency to 2 to avoid overloading self-hosted proxy/LLM queues
+        semaphore = asyncio.Semaphore(2)
+        async def _generate_with_limit(spec):
+            async with semaphore:
+                return await self._generate_file(spec, code_plan, experiment_blueprint, setup_output)
+                
+        self.log(f"  Generating {len(valid_specs)} files with concurrency limit 2")
         contents = await asyncio.gather(*(
-            self._generate_file(spec, code_plan, experiment_blueprint, setup_output)
-            for spec in valid_specs
+            _generate_with_limit(spec) for spec in valid_specs
         ))
 
         generated_files = []
