@@ -212,16 +212,26 @@ class RuntimeEnvironmentManager(
     # ------------------------------------------------------------------
 
     def _resolve_backend(self) -> tuple[str, bool]:
-        """Decide between 'conda' and 'venv' based on config + system state.
+        """Decide between 'uv', 'conda', and 'venv' based on config + system state.
 
         Returns ``(backend, forced)`` where *forced* is True when the user
-        explicitly set ``environment_backend`` to ``"conda"`` or ``"venv"``
+        explicitly set ``environment_backend`` to ``"uv"``, ``"conda"``, or ``"venv"``
         (as opposed to ``"auto"`` detection).
         """
+        import shutil
         backend = (self.config.environment_backend or "auto").strip().lower()
 
         if backend == "venv":
             return "venv", True
+
+        if backend == "uv":
+            if shutil.which("uv") is None:
+                raise RuntimeError(
+                    "environment_backend='uv' but uv is not installed.\n"
+                    "Install uv: https://github.com/astral-sh/uv\n"
+                    "Or set environment_backend='auto' in config.json."
+                )
+            return "uv", True
 
         if backend == "conda":
             cmd = _find_conda()
@@ -234,7 +244,10 @@ class RuntimeEnvironmentManager(
                 )
             return "conda", True
 
-        # "auto" — prefer conda when available
+        # "auto" — prefer uv, then conda when available
+        if shutil.which("uv") is not None:
+            self._log("Auto-detected uv — using uv backend")
+            return "uv", False
         if _find_conda() is not None:
             self._log("Auto-detected conda — using conda backend")
             return "conda", False
@@ -433,10 +446,77 @@ class RuntimeEnvironmentManager(
                 raise RuntimeError(
                     "environment_backend='conda' but conda env creation failed.\n"
                     "Check that conda is working correctly, or set "
-                    "environment_backend='auto' to allow venv fallback."
+                    "environment_backend='auto' to allow fallback."
                 )
-            # Auto-detected conda failed — graceful degradation to venv
+            # Auto-detected conda failed — graceful degradation
             self._log("Per-session conda env failed, falling back to venv")
+            backend = "venv"
+
+        # ----- uv path ---------------------------------------------------
+        if backend == "uv":
+            import shutil
+            venv_dir = code_dir / ".venv"
+            is_windows = platform.system() == "Windows"
+            python_path = venv_dir / ("Scripts/python.exe" if is_windows else "bin/python")
+            created = False
+            recreated = False
+
+            if not python_path.exists():
+                self._log(f"Creating isolated uv venv at {venv_dir} ...")
+                loop = asyncio.get_running_loop()
+                uv_bin = shutil.which("uv") or "uv"
+                try:
+                    await loop.run_in_executor(
+                        None,
+                        lambda: subprocess.run([uv_bin, "venv", str(venv_dir)], check=True, capture_output=True)
+                    )
+                    created = True
+                    self._log(f"Venv created via uv (python: {python_path})")
+                except subprocess.CalledProcessError as uv_exc:
+                    if uv_exc.stderr:
+                        self._log(f"uv venv creation failed: {uv_exc.stderr.decode('utf-8')}")
+                    else:
+                        self._log(f"uv venv creation failed: {uv_exc}")
+                    if backend_forced:
+                        raise RuntimeError(f"environment_backend='uv' but venv creation failed: {uv_exc}")
+                    self._log("Falling back to standard venv...")
+                    backend = "venv"
+            else:
+                self._log(f"Reusing existing uv venv at {venv_dir}")
+
+            if backend == "uv":
+                install_info = await self.install_requirements(str(python_path), code_dir, backend="uv")
+                runtime_validation = await self.validate_runtime(
+                    str(python_path),
+                    code_dir,
+                    execution_policy=execution_policy,
+                )
+                validation_repair = await self._repair_runtime_validation(
+                    kind="uv",
+                    python=str(python_path),
+                    code_dir=code_dir,
+                    execution_policy=execution_policy,
+                    validation=runtime_validation,
+                    env_dir=venv_dir,
+                    created=created,
+                )
+                runtime_validation = validation_repair["validation"]
+                python_path = Path(str(validation_repair["python"]))
+                install_info = validation_repair.get("dependency_install", install_info)
+                recreated = bool(validation_repair.get("recreated", False))
+                return {
+                    "kind": "uv",
+                    "python": str(python_path),
+                    "env_path": str(venv_dir),
+                    "created": created or recreated,
+                    "recreated": recreated,
+                    "requirements_path": str(requirements_path) if requirements_path.exists() else "",
+                    "environment_file": str(environment_file) if environment_file else "",
+                    "dependency_install": install_info,
+                    "runtime_validation": runtime_validation,
+                    "runtime_validation_repair": validation_repair["repair"],
+                    "execution_policy": execution_policy.to_dict(),
+                }
 
         # ----- venv path (default / fallback) ----------------------------
         # Never fall back to sys.executable to avoid polluting the CLI

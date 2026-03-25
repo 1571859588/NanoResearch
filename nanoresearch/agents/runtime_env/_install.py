@@ -36,10 +36,18 @@ class _InstallMixin:
         specs: list[str],
         *,
         source: str = "runtime_validation",
+        backend: str = "auto",
     ) -> dict[str, Any]:
         filtered_specs = [str(spec).strip() for spec in specs if str(spec).strip()]
         if not filtered_specs:
             return {"status": "skipped", "source": source, "specs": []}
+
+        import shutil
+        uv_path = shutil.which("uv")
+        if (backend == "uv" or "uv" in str(python).lower()) and uv_path:
+            pip_cmd = [uv_path, "pip", "install", "--python", python, *filtered_specs, "--quiet"]
+        else:
+            pip_cmd = [python, "-m", "pip", "install", *filtered_specs, "--quiet"]
 
         self._log(f"Installing targeted dependency specs via {source}: {filtered_specs}")
         loop = asyncio.get_running_loop()
@@ -47,7 +55,7 @@ class _InstallMixin:
             proc_result = await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(
-                    [python, "-m", "pip", "install", *filtered_specs, "--quiet"],
+                    pip_cmd,
                     cwd=str(code_dir),
                     capture_output=True,
                     text=True,
@@ -104,7 +112,7 @@ class _InstallMixin:
             "python": str(python_path),
         }
 
-    async def install_requirements(self, python: str, code_dir: Path) -> dict[str, Any]:
+    async def install_requirements(self, python: str, code_dir: Path, backend: str = "auto") -> dict[str, Any]:
         """Install dependencies from the best available project manifest.
 
         If the project requires PyTorch-family packages and an NVIDIA GPU is
@@ -118,6 +126,10 @@ class _InstallMixin:
             self._log("No dependency manifest found, skipping pip install")
             return {"status": "skipped", "source": "", "manifest": ""}
 
+        import shutil
+        uv_path = shutil.which("uv")
+        is_uv = bool((backend == "uv" or "uv" in str(python).lower()) and uv_path)
+
         # ── Pre-install: CUDA-aware PyTorch installation ──
         gpu_info: dict[str, Any] | None = None
         torch_pre_installed = False
@@ -127,7 +139,7 @@ class _InstallMixin:
             pass  # GPU detection is best-effort; fall through to normal install
         if gpu_info is not None:
             torch_pre_installed = await self._preinstall_torch_cuda(
-                python, code_dir, install_plan, gpu_info,
+                python, code_dir, install_plan, gpu_info, is_uv=is_uv,
             )
 
         self._log(f"Installing dependencies from {install_plan.source} ...")
@@ -140,11 +152,17 @@ class _InstallMixin:
         for strategy, install_args in attempts:
             if not install_args:
                 continue
+            
+            if is_uv and uv_path:
+                pip_cmd = [uv_path, "pip", "install", "--python", python, *install_args, "--quiet"]
+            else:
+                pip_cmd = [python, "-m", "pip", "install", *install_args, "--quiet"]
+
             try:
                 proc_result = await loop.run_in_executor(
                     None,
                     lambda: subprocess.run(
-                        [python, "-m", "pip", "install", *install_args, "--quiet"],
+                        pip_cmd,
                         cwd=str(code_dir),
                         capture_output=True,
                         text=True,
@@ -208,6 +226,7 @@ class _InstallMixin:
         code_dir: Path,
         install_plan: DependencyInstallPlan,
         gpu_info: dict[str, Any],
+        is_uv: bool = False,
     ) -> bool:
         """Install PyTorch-family packages from the official CUDA wheel index.
 
@@ -254,17 +273,29 @@ class _InstallMixin:
         )
         self._log(f"  torch packages: {torch_specs}")
 
+        import shutil
+        uv_path = shutil.which("uv")
+        
         loop = asyncio.get_running_loop()
         try:
+            if is_uv and uv_path:
+                pip_cmd = [
+                    uv_path, "pip", "install", "--python", python,
+                    *torch_specs,
+                    "--index-url", index_url,
+                    "--quiet",
+                ]
+            else:
+                pip_cmd = [
+                    python, "-m", "pip", "install",
+                    *torch_specs,
+                    "--index-url", index_url,
+                    "--quiet",
+                ]
             proc = await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(
-                    [
-                        python, "-m", "pip", "install",
-                        *torch_specs,
-                        "--index-url", index_url,
-                        "--quiet",
-                    ],
+                    pip_cmd,
                     cwd=str(code_dir),
                     capture_output=True,
                     text=True,
@@ -280,15 +311,24 @@ class _InstallMixin:
                 # Try without version pin (just 'torch')
                 if torch_specs != ["torch"]:
                     self._log("Retrying with unversioned 'torch' ...")
+                    if is_uv and uv_path:
+                        retry_cmd = [
+                            uv_path, "pip", "install", "--python", python,
+                            "torch", "torchvision", "torchaudio",
+                            "--index-url", index_url,
+                            "--quiet",
+                        ]
+                    else:
+                        retry_cmd = [
+                            python, "-m", "pip", "install",
+                            "torch", "torchvision", "torchaudio",
+                            "--index-url", index_url,
+                            "--quiet",
+                        ]
                     proc2 = await loop.run_in_executor(
                         None,
                         lambda: subprocess.run(
-                            [
-                                python, "-m", "pip", "install",
-                                "torch", "torchvision", "torchaudio",
-                                "--index-url", index_url,
-                                "--quiet",
-                            ],
+                            retry_cmd,
                             cwd=str(code_dir),
                             capture_output=True,
                             text=True,

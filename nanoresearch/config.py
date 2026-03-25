@@ -143,7 +143,8 @@ class ResearchConfig(BaseModel):
     runtime_auto_install_allowlist: list[str] = Field(default_factory=list)
 
     # Environment backend for experiment execution.
-    # "auto" — prefer conda/mamba when available, fall back to venv.
+    # "auto" — prefer uv when available, then conda, fall back to venv.
+    # "uv"    — force uv (error if not installed).
     # "conda" — force conda (error if not installed).
     # "venv"  — always use isolated venv (+ pip CUDA wheel pre-install).
     environment_backend: str = "auto"
