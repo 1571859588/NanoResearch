@@ -942,7 +942,13 @@ class SetupAgent(_SetupSearchMixin, _SetupGithubMixin, BaseResearchAgent):
             # Try local first
             local_dataset = resource_manager.find_dataset(dataset_name)
             if local_dataset:
-                copied_path = resource_manager.copy_dataset_to_workspace(dataset_name, self.workspace.path)
+                is_valid = True
+                if getattr(self.config, "verify_local_resources_with_llm", False):
+                    is_valid = await self._verify_local_resource_match(ds_info, local_dataset, "dataset")
+                    
+                if is_valid:
+                    self.log(f"Found and verified local dataset match: {local_dataset['name']}")
+                    copied_path = resource_manager.copy_dataset_to_workspace(dataset_name, self.workspace.path)
                 if copied_path:
                     metadata = resource_manager.get_dataset_metadata(dataset_name)
                     acquired_resources.append({
@@ -1028,6 +1034,50 @@ class SetupAgent(_SetupSearchMixin, _SetupGithubMixin, BaseResearchAgent):
             # This would be handled by the existing blueprint augmentation logic
 
         return acquired_resources
+    async def _verify_local_resource_match(self, requested_info: dict, local_match: dict, res_type: str) -> bool:
+        """Use LLM to verify if a local heuristic match is semantically valid."""
+        req_name = requested_info.get("name", "")
+        req_desc = requested_info.get("description", "") or requested_info.get("rationale", "")
+        
+        loc_name = local_match.get("name", "")
+        loc_desc = local_match.get("description", "") or local_match.get("task", "")
+        loc_arch = local_match.get("architecture", "")
+        loc_params = local_match.get("parameters", "")
+        
+        system_prompt = (
+            f"You are a strict data validation expert. An experiment requires a {res_type} named '{req_name}'. "
+            f"The system found a local candidate named '{loc_name}'. "
+            f"Your job is to determine if the local candidate is an EXACT, functionally equivalent replacement for the requested {res_type}. "
+            f"Pay extremely close attention to version numbers, patch sizes (e.g. patch16 vs patch32 or ViT-B/16 vs ViT-B/32), "
+            f"parameter counts (e.g. 3B vs 32B), and architectures. If there is ANY mismatch in structural size or format, you must reject it. "
+            f"Reply with a valid JSON strictly containing a boolean field 'is_match' and a string field 'reason'."
+        )
+        
+        user_prompt = (
+            f"--- REQUESTED {res_type.upper()} ---\n"
+            f"Name: {req_name}\n"
+            f"Context: {req_desc}\n\n"
+            f"--- LOCAL CANDIDATE ---\n"
+            f"Name: {loc_name}\n"
+            f"Description: {loc_desc}\n"
+            f"Architecture: {loc_arch}\n"
+            f"Parameters: {loc_params}\n"
+        )
+        
+        try:
+            raw = await self.generate_json(system_prompt, user_prompt)
+            if isinstance(raw, dict) and "is_match" in raw:
+                is_match = bool(raw["is_match"])
+                self.log(f"LLM Verification for '{req_name}' vs locally cached '{loc_name}': {is_match} (Reason: {raw.get('reason', '')})")
+                return is_match
+            return False
+        except Exception as e:
+            self.log(f"Verification LLM failed: {e}. Defaulting to rejection.")
+            return False
+
+    async def _acquire_resources_intelligently(
+        self, search_plan: dict, datasets_dir: Path, models_dir: Path, resource_manager: ResourceManager
+    ) -> list[dict]:
         """Intelligently acquire resources using local priority and LLM matching."""
         acquired_resources = []
 
@@ -1042,8 +1092,13 @@ class SetupAgent(_SetupSearchMixin, _SetupGithubMixin, BaseResearchAgent):
             local_dataset = resource_manager.find_dataset(dataset_name)
 
             if local_dataset:
-                self.log(f"Found local dataset match: {local_dataset['name']}")
-                # Copy to workspace
+                is_valid = True
+                if getattr(self.config, "verify_local_resources_with_llm", False):
+                    is_valid = await self._verify_local_resource_match(ds_info, local_dataset, "dataset")
+                
+                if is_valid:
+                    self.log(f"Found and verified local dataset match: {local_dataset['name']}")
+                    # Copy to workspace
                 copied_path = resource_manager.copy_dataset_to_workspace(dataset_name, self.workspace.path)
                 if copied_path:
                     # Get metadata
@@ -1076,8 +1131,13 @@ class SetupAgent(_SetupSearchMixin, _SetupGithubMixin, BaseResearchAgent):
             local_model = resource_manager.find_model(model_name)
 
             if local_model:
-                self.log(f"Found local model match: {local_model['name']}")
-                # Copy to workspace models directory
+                is_valid = True
+                if getattr(self.config, "verify_local_resources_with_llm", False):
+                    is_valid = await self._verify_local_resource_match(model_info, local_model, "model")
+                    
+                if is_valid:
+                    self.log(f"Found and verified local model match: {local_model['name']}")
+                    # Copy to workspace models directory
                 location = local_model.get("location", "")
                 if location:
                     if location.startswith("local_models/"):
