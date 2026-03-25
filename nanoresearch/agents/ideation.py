@@ -269,7 +269,14 @@ Include queries for:
 - Benchmark datasets and evaluation approaches
 - Recent surveys or reviews
 
-Return JSON: {{"queries": ["query1", "query2", ...]}}"""
+### OUTPUT FORMAT ###
+Return your response as a JSON object wrapped in markdown code blocks:
+```json
+{{
+  "queries": ["query1", "query2", ...]
+}}
+```
+Do NOT use response_format parameter - use markdown code blocks instead."""
 
         try:
             result = await self.generate_json(IDEATION_SYSTEM_PROMPT, prompt)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from nanoresearch.agents.base import BaseResearchAgent
@@ -78,6 +79,9 @@ class PlanningAgent(BaseResearchAgent):
         # Build evidence block from extracted metrics
         evidence_block = self._build_evidence_block(ideation_data)
 
+        # Load local resource catalog so LLM can reference available datasets/models
+        local_resources_block = self._load_local_resource_catalog()
+
         prompt = f"""Research Topic: "{topic}"
 
 Selected Hypothesis: {selected_hyp}
@@ -93,11 +97,15 @@ Key Related Papers:
 
 {evidence_block}
 
+{local_resources_block}
+
 Design a comprehensive experiment blueprint as JSON with:
 1. "title": Experiment title
 2. "hypothesis_ref": "{selected_hyp}"
 3. "datasets": Array of datasets, each with:
    - "name", "description", "source_url", "size_info", "preprocessing_notes"
+   IMPORTANT: If a LOCAL dataset is available (listed above), use its EXACT name as the "name" field.
+   For example, if the local dataset is named "CUB_200_2011", use "CUB_200_2011" as the name, NOT "CUB-200".
 4. "baselines": Array of baseline methods, each with:
    - "name", "description", "reference_paper_id"
    - "expected_performance": dict of metric→value (use ONLY values from the evidence above, or "N/A")
@@ -115,6 +123,7 @@ Design a comprehensive experiment blueprint as JSON with:
 
 IMPORTANT: Use ONLY the numbers from the PUBLISHED QUANTITATIVE EVIDENCE section.
 If evidence is missing for a baseline-metric pair, use "N/A".
+IMPORTANT: Prefer LOCAL datasets when available. Use the exact local dataset name.
 
 Return ONLY valid JSON."""
 
@@ -222,6 +231,80 @@ Return ONLY valid JSON."""
             lines.append(f"WARNING: {w}")
 
         lines.append("=== END EVIDENCE ===")
+        return "\n".join(lines)
+
+    def _load_local_resource_catalog(self) -> str:
+        """Read DATASETS.md and MODELS.md to build a local resource info block for the LLM.
+
+        This enables the LLM to design experiments using the exact local dataset
+        names, avoiding name mismatches during the SETUP phase.
+        """
+        project_root = Path("/mnt/public/sichuan_a/nyt/ai/NanoResearch")
+
+        # Also check config for custom paths
+        local_datasets_dir = getattr(self.config, "local_datasets_dir", None)
+        local_models_dir = getattr(self.config, "local_models_dir", None)
+
+        lines = ["=== LOCAL RESOURCES AVAILABLE ==="]
+        lines.append(
+            "The following datasets and models are ALREADY AVAILABLE locally. "
+            "When designing your experiment, PREFER these local resources. "
+            "Use the EXACT dataset name as shown below in your blueprint's dataset \"name\" field."
+        )
+        lines.append("")
+
+        # Read DATASETS.md
+        datasets_md = project_root / "DATASETS.md"
+        if datasets_md.exists():
+            try:
+                content = datasets_md.read_text(encoding="utf-8")
+                # Extract the dataset index table and key info (first ~60 lines)
+                lines.append("--- Local Datasets ---")
+                for line in content.split("\n")[:60]:
+                    lines.append(line)
+                lines.append("")
+            except Exception as exc:
+                logger.debug("Failed to read DATASETS.md: %s", exc)
+
+        # Also scan actual directories for datasets not in DATASETS.md
+        ds_dirs = [project_root / "local_datasets"]
+        if local_datasets_dir:
+            ds_dirs.append(Path(local_datasets_dir))
+        for ds_dir in ds_dirs:
+            if ds_dir.exists():
+                for item in sorted(ds_dir.iterdir()):
+                    if item.is_dir():
+                        file_count = sum(1 for _ in item.rglob("*") if _.is_file())
+                        lines.append(
+                            f"  LOCAL DATASET: \"{item.name}\" at {item} "
+                            f"({file_count} files)"
+                        )
+        lines.append("")
+
+        # Read MODELS.md
+        models_md = project_root / "MODELS.md"
+        if models_md.exists():
+            try:
+                content = models_md.read_text(encoding="utf-8")
+                lines.append("--- Local Pretrained Models ---")
+                for line in content.split("\n")[:40]:
+                    lines.append(line)
+                lines.append("")
+            except Exception as exc:
+                logger.debug("Failed to read MODELS.md: %s", exc)
+
+        # Scan actual model directories
+        model_dirs = [project_root / "local_models"]
+        if local_models_dir:
+            model_dirs.append(Path(local_models_dir))
+        for model_dir in model_dirs:
+            if model_dir.exists():
+                for item in sorted(model_dir.iterdir()):
+                    if item.is_dir():
+                        lines.append(f"  LOCAL MODEL: \"{item.name}\" at {item}")
+        lines.append("")
+
+        lines.append("=== END LOCAL RESOURCES ===")
         return "\n".join(lines)
 
     @staticmethod

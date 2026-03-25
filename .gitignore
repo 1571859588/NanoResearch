@@ -86,3 +86,6 @@ PROJECT_OVERVIEW_AND_FIX_BACKLOG.md
 workspaces/
 local_datasets/
 local_models/
+node_modules/
+test.*/
+test_*

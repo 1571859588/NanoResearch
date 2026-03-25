@@ -245,8 +245,11 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
             "8. All runtime downloads MUST go to the Data directory path below (use as root/cache_dir)\n"
             "9. All file paths must be ABSOLUTE, never relative like ./data/\n"
             "10. NEVER fall back to synthetic data. If a dataset truly cannot be downloaded, "
-            "use a publicly available alternative dataset for the same task from HuggingFace Hub.\n"
-            "Return JSON only."
+            "use a publicly available alternative dataset for the same task from HuggingFace Hub.\n\n"
+            "### OUTPUT FORMAT ###\n"
+            "Return your response as a JSON object wrapped in markdown code blocks:\n"
+            "```json\n{\n  \"your\": \"json\",\n  \"response\": \"here\"\n}\n```\n"
+            "Do NOT use response_format parameter - use markdown code blocks instead."
         )
 
         user_prompt = f"""Topic: {topic}

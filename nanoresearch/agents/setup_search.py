@@ -701,6 +701,36 @@ Return JSON:
             url = ds_info.get("url", "") or ds_info.get("download_cmd", "")
             filename = ds_info.get("filename", "")
 
+            # Priority: LOCAL_RESOURCE - copy from local path
+            if url == "LOCAL_RESOURCE":
+                local_path = filename or ds_info.get("local_path", "")
+                if local_path and Path(local_path).exists():
+                    self.log(f"Copying local resource: {local_path}")
+                    source_path = Path(local_path)
+                    if source_path.is_dir():
+                        # Copy directory
+                        safe_name = name.replace("/", "_").replace(" ", "_")
+                        dest = data_dir / safe_name
+                        if dest.exists():
+                            shutil.rmtree(dest)
+                        shutil.copytree(source_path, dest)
+                        self.log(f"Copied local resource {source_path.name} -> {dest.name}")
+                        downloaded.append({
+                            "name": name, "type": "dataset",
+                            "path": str(dest), "status": "downloaded",
+                            "source": "local_resource", "local_source": local_path,
+                        })
+                    else:
+                        # Copy file and extract if archive
+                        extracted_path = await self._extract_archive(source_path, data_dir)
+                        self.log(f"Copied and extracted local resource: {local_path}")
+                        downloaded.append({
+                            "name": name, "type": "dataset",
+                            "path": str(extracted_path), "status": "downloaded",
+                            "source": "local_resource", "local_source": local_path,
+                        })
+                    continue
+
             if not url:
                 continue
 

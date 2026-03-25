@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 
 ANALYSIS_SYSTEM_PROMPT = """You are an ML experiment analysis expert. Given experiment results, perform structured attribution analysis.
 
-Output ONLY valid JSON with these fields:
+### OUTPUT FORMAT ###
+Return your response as a JSON object wrapped in markdown code blocks:
+```json
 {
   "attribution": "<one of: data_issue, training_strategy, architecture, hyperparameter, implementation_bug>",
   "recommended_action": "<specific, actionable next step>",
@@ -31,6 +33,8 @@ Output ONLY valid JSON with these fields:
   "termination_reason": "<null or one of: target_met, plateau, max_rounds, degradation>",
   "error_categories": ["<category1>", ...]
 }
+```
+Do NOT use response_format parameter - use markdown code blocks instead.
 
 Be concise and precise. Focus on the most impactful change for the next iteration."""
 

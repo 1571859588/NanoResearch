@@ -61,8 +61,7 @@ class _MultiModelHelpersMixin:
         self._apply_completion_limit(kwargs, config, is_thinking)
         if config.temperature is not None and not is_thinking:
             kwargs["temperature"] = config.temperature
-        if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
+        # Note: Removed response_format=json_object - use prompt-based JSON formatting
 
         logger.debug("Calling vision model=%s timeout=%ss", config.model, timeout)
 

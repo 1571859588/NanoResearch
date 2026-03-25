@@ -1,0 +1,38 @@
+{
+  "datasets": {
+    "total": 2,
+    "available": [
+      {
+        "name": "CUB_200_2011 (Caltech-UCSD Birds-200-2011)",
+        "task": "Fine-grained visual classification, concept bottleneck models, zero-shot learning evaluation",
+        "class_count": 0,
+        "exists_locally": true
+      },
+      {
+        "name": "AwA2 (Animals with Attributes 2)",
+        "task": "Attribute-based classification, zero-shot learning, concept bottleneck models",
+        "class_count": 0,
+        "exists_locally": true
+      }
+    ],
+    "summary": {}
+  },
+  "models": {
+    "total": 2,
+    "available": [
+      {
+        "name": "ESM-2 (Evolutionary Scale Modeling 2)",
+        "type": "protein_model",
+        "parameters": 650000000,
+        "exists_locally": false
+      },
+      {
+        "name": "ProtBERT",
+        "type": "protein_model",
+        "parameters": 0,
+        "exists_locally": false
+      }
+    ],
+    "summary": {}
+  }
+}

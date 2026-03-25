@@ -265,9 +265,15 @@ class ModelDispatcher(_MultiModelHelpersMixin):
                     raise RuntimeError(
                         f"LLM returned empty choices (model={config.model})"
                     )
-                content = self._strip_think_blocks(
-                    response.choices[0].message.content or ""
-                )
+                message = response.choices[0].message
+                raw_content = message.content or ""
+                content = self._strip_think_blocks(raw_content)
+
+                # Debug: Log content lengths
+                logger.error("LLM response DEBUG: raw_len=%d, stripped_len=%d, starts_with=%r, content_len=%r, choice_idx=%d",
+                            len(raw_content), len(content), content[:50] if content else "",
+                            len(message.content) if message.content else 0,
+                            response.choices[0].index if hasattr(response.choices[0], 'index') else 'N/A')
 
                 # Check for empty content in json_mode - retry without response_format
                 if json_mode_enabled and not content.strip():

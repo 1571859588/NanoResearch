@@ -265,8 +265,10 @@ class _SetupGithubMixin:
         """Ask LLM to read the README and extract the actual download command."""
         system_prompt = (
             "You are a data engineer. Given a dataset GitHub repo's README, extract the "
-            "exact command(s) needed to download the dataset files. "
-            "Return JSON only."
+            "exact command(s) needed to download the dataset files.\n\n"
+            "**IMPORTANT OUTPUT FORMAT**: Return your JSON response wrapped in markdown code blocks:\n"
+            "```json\n{\n  \"your\": \"json\",\n  \"response\": \"here\"\n}\n```\n"
+            "Do NOT use response_format parameter - use markdown code blocks instead."
         )
         user_prompt = f"""Dataset: {dataset_name}
 Repo: github.com/{owner}/{repo}

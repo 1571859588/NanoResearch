@@ -115,7 +115,8 @@ class BaseResearchAgent(ABC):
 
         # Handle empty response immediately
         if not raw or not raw.strip():
-            logger.error("LLM returned empty response for json generation")
+            logger.error("LLM returned empty response for json generation. Raw length: %d, Raw repr: %r",
+                        len(raw) if raw else 0, raw[:200] if raw else None)
             raise LLMError(
                 "LLM output is empty (no response from model). "
                 f"Raw output: {raw!r}"

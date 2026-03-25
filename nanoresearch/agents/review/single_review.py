@@ -116,7 +116,9 @@ IMPORTANT scoring guidelines:
   (1 critical flaw like missing experiments > 5 minor typos)
 - Justify your score — explain which specific issues drive it down
 
-Return JSON:
+### OUTPUT FORMAT ###
+Return your response as a JSON object wrapped in markdown code blocks:
+```json
 {{
     "section": "{heading}",
     "score": 7,
@@ -124,7 +126,9 @@ Return JSON:
     "strengths": ["Strength 1: what is good and must be preserved"],
     "issues": ["Issue 1: [PROBLEM] ... [IMPACT] ... [FIX] ..."],
     "suggestions": ["Suggestion 1"]
-}}"""
+}}
+```
+Do NOT use response_format parameter - use markdown code blocks instead."""
 
         try:
             result = await self.generate_json(

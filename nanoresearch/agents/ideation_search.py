@@ -374,13 +374,19 @@ class _IdeationSearchMixin:
 Collected papers ({len(papers)} total, showing top {min(len(papers), MAX_PAPERS_FOR_ANALYSIS)}):
 {papers_text}
 
-Evaluate the search coverage for this topic. Return JSON:
+Evaluate the search coverage for this topic.
+
+### OUTPUT FORMAT ###
+Return your response as a JSON object wrapped in markdown code blocks:
+```json
 {{
   "coverage_score": <1-10, where 10 is comprehensive>,
   "missing_directions": ["<specific missing research sub-area>", ...],
   "suggested_queries": ["<search query to fill each gap>", ...],
   "well_covered": ["<research direction that is well represented>", ...]
-}}"""
+}}
+```
+Do NOT use response_format parameter - use markdown code blocks instead."""
 
         try:
             result = await self.generate_json(SEARCH_COVERAGE_SYSTEM_PROMPT, user_prompt)
@@ -427,7 +433,14 @@ frequently cited and essential for any research in this area.
 
 {survey_text}
 
-Return JSON: {{"must_cite_titles": ["Paper Title 1", "Paper Title 2", ...]}}"""
+### OUTPUT FORMAT ###
+Return your response as a JSON object wrapped in markdown code blocks:
+```json
+{{
+  "must_cite_titles": ["Paper Title 1", "Paper Title 2", ...]
+}}
+```
+Do NOT use response_format parameter - use markdown code blocks instead."""
 
         try:
             result = await self.generate_json(IDEATION_MUST_CITE_SYSTEM, prompt)
