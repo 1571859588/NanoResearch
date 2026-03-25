@@ -102,6 +102,14 @@ class SetupAgent(_SetupSearchMixin, _SetupGithubMixin, BaseResearchAgent):
             verified_resources, data_dir, models_dir
         )
 
+        staged_resources, workspace_aliases = await self._generate_resource_descriptions(
+            staged_resources, workspace_aliases
+        )
+
+        staged_resources, workspace_aliases = await self._deduplicate_datasets(
+            staged_resources, workspace_aliases, data_dir
+        )
+
         result = {
             "search_plan": search_plan,
             "cloned_repos": cloned_repos,
@@ -565,6 +573,247 @@ class SetupAgent(_SetupSearchMixin, _SetupGithubMixin, BaseResearchAgent):
                 staged_resources.append(staged)
 
         return staged_resources, workspace_aliases
+
+    async def _generate_resource_descriptions(
+        self,
+        staged_resources: list[dict],
+        workspace_aliases: list[dict],
+    ) -> tuple[list[dict], list[dict]]:
+        """Generate DATASET.md/MODEL.md for each resource by scanning its structure and reading key metadata."""
+        
+        for r in staged_resources:
+            path = r.get("path", "")
+            if not path:
+                continue
+                
+            p = Path(path)
+            if not p.exists() or not p.is_dir():
+                continue
+                
+            res_type = str(r.get("type", "dataset")).upper()
+            md_name = f"{res_type}.md"
+            md_path = p / md_name
+            
+            # Skip if already exists
+            if md_path.exists():
+                r["semantic_md"] = md_path.read_text(errors="ignore")
+                continue
+                
+            self.log(f"Generating {md_name} with deep semantics for {r.get('name', p.name)}")
+            
+            import os
+            
+            # 1. Read README files
+            readme_text = ""
+            for name in ["README.md", "README.txt", "README", "dataset_info.json", "metadata.json"]:
+                candidate = p / name
+                if not candidate.exists():
+                    # Check case-insensitive
+                    matches = [f for f in p.iterdir() if f.is_file() and f.name.lower() == name.lower()]
+                    if matches:
+                        candidate = matches[0]
+                
+                if candidate.exists() and candidate.is_file():
+                    try:
+                        sz = candidate.stat().st_size
+                        if sz < 1024 * 1024:  # Under 1MB
+                            content = candidate.read_text(encoding="utf-8", errors="ignore")
+                            readme_text += f"\n--- {candidate.name} ---\n{content[:5000]}"
+                            if len(content) > 5000:
+                                readme_text += "\n... (truncated)\n"
+                    except Exception:
+                        pass
+                        
+            # 2. Extract key metadata files commonly found in datasets (.txt, small .json)
+            meta_text = ""
+            try:
+                for f in p.iterdir():
+                    if f.is_file() and f.suffix.lower() in [".txt", ".json", ".csv"]:
+                        if f.name.lower() in ["classes.txt", "train_test_split.txt", "categories.json", "labels.txt"] or \
+                           (f.stat().st_size < 50 * 1024 and not f.name.lower().startswith("readme")):
+                            content = f.read_text(encoding="utf-8", errors="ignore")
+                            # Only capture first 1000 chars of metadata to avoid swamping context
+                            meta_text += f"\n--- {f.name} ---\n{content[:1000]}"
+                            if len(content) > 1000:
+                                meta_text += "\n... (truncated)\n"
+            except Exception:
+                pass
+            
+            # 3. Shallow Tree extraction (depth 2)
+            tree_lines = []
+            try:
+                for root, dirs, files in os.walk(str(p)):
+                    rel = os.path.relpath(root, str(p))
+                    if rel == ".":
+                        depth = 0
+                    else:
+                        depth = rel.count(os.sep) + 1
+                        
+                    if depth > 2:
+                        dirs.clear() # don't go deeper
+                        continue
+                        
+                    indent = "  " * depth
+                    tree_lines.append(f"{indent}[D] {os.path.basename(root) or p.name}/")
+                    for f in files[:10]: # max 10 files per dir
+                        tree_lines.append(f"{indent}  [F] {f}")
+                    if len(files) > 10:
+                        tree_lines.append(f"{indent}  ... ({len(files) - 10} more files)")
+                        
+                    if len(tree_lines) > 100:
+                        tree_lines.append("... (structure truncated)")
+                        break
+                        
+                tree_str = "\n".join(tree_lines)
+            except Exception as e:
+                tree_str = f"Error reading directory: {e}"
+                
+            system_prompt = (
+                f"You are a data curation expert. Please write a comprehensive `{md_name}` for this resource "
+                f"called '{r.get('name', 'unknown')}'. Describe its logical functionality, structural outline, "
+                f"and contents based on the provided README, metadata snippets, and directory tree. "
+                f"Ensure anyone can understand what {"dataset" if res_type == "DATASET" else "model"} this is and how to use it just by reading the markdown. "
+                "Output STRICTLY the raw markdown content without enclosing JSON or JSON codeblocks."
+            )
+            
+            user_prompt = f"Resource Type: {res_type}\nName: {r.get('name', 'unknown')}\n\n"
+            if readme_text:
+                user_prompt += f"=== MAIN DOCUMENTATION ==={readme_text}\n\n"
+            if meta_text:
+                user_prompt += f"=== KEY METADATA SNIPPETS ==={meta_text}\n\n"
+            user_prompt += f"=== DIRECTORY STRUCTURE ===\n{tree_str}"
+            
+            stage_config = self.config.for_stage("experiment")
+            try:
+                if hasattr(self, "_dispatcher"):
+                    md_text = await self._dispatcher.generate(stage_config, system_prompt, user_prompt, json_mode=False)
+                else:
+                    raw = await self.generate_json(system_prompt + " Wrap the text in a JSON string like {\"text\": \"...\"}.", user_prompt)
+                    md_text = raw.get("text", "") if isinstance(raw, dict) else str(raw)
+                    
+                # Clean up fences
+                if md_text.startswith("```markdown"):
+                    md_text = md_text.removeprefix("```markdown").removesuffix("```").strip()
+                elif md_text.startswith("```"):
+                    md_text = md_text.removeprefix("```").removesuffix("```").strip()
+                    
+                md_path.write_text(md_text, encoding="utf-8")
+                r["semantic_md"] = md_text
+                self.log(f"Successfully generated {md_name} for {r.get('name', p.name)}")
+            except Exception as exc:
+                self.log(f"Failed to generate {md_name} for {r.get('name', p.name)}: {exc}")
+                r["semantic_md"] = ""
+                
+        return staged_resources, workspace_aliases
+
+    async def _deduplicate_datasets(
+        self,
+        staged_resources: list[dict],
+        workspace_aliases: list[dict],
+        data_dir: Path,
+    ) -> tuple[list[dict], list[dict]]:
+        """Use LLM and the semantic descriptions (DATASET.md/MODEL.md) to identify and deduplicate resources."""
+        dataset_resources = [r for r in staged_resources if r.get("type", "dataset") == "dataset"]
+        model_resources = [r for r in staged_resources if r.get("type", "model") == "model"]
+        
+        merged_resources = []
+        skip_names = set()
+        
+        for resources_batch, res_type in [(dataset_resources, "dataset"), (model_resources, "model")]:
+            if len(resources_batch) <= 1:
+                merged_resources.extend(resources_batch)
+                continue
+                
+            res_payloads = []
+            for r in resources_batch:
+                res_payloads.append({
+                    "name": r.get("name", ""),
+                    "description": r.get("semantic_md", "")[:1000] # trim context length safely
+                })
+                
+            system_prompt = (
+                f"You are an expert at identifying duplicate data resources. Given the following {res_type}s and "
+                f"their semantic descriptions (DATASET.md/MODEL.md), determine if any refer to the EXACT SAME "
+                f"underlying physical resource (even if named differently or having structural subset variations). "
+                f"Return ONLY a valid JSON string containing an array of arrays, where each inner array contains "
+                f"identical resource names that should be merged. Example: [[\"CUB-200-2011\", \"CUB_200_2011\"]]. "
+                f"Only group them if you are highly confident they represent the physically same {res_type}. "
+                "Return nothing else but JSON."
+            )
+            
+            user_prompt = f"Resources:\n{json.dumps(res_payloads)}"
+            
+            try:
+                raw = await self.generate_json(system_prompt, user_prompt)
+                groups = raw if isinstance(raw, list) else []
+            except Exception as exc:
+                self.log(f"Semantic Deduplication LLM failed for {res_type}: {exc}")
+                merged_resources.extend(resources_batch)
+                continue
+                
+            if not isinstance(groups, list):
+                merged_resources.extend(resources_batch)
+                continue
+                
+            res_paths = {r.get("name", ""): Path(r.get("path", "")) for r in resources_batch}
+            res_dict = {r.get("name", ""): r for r in resources_batch}
+            
+            for r in resources_batch:
+                name = r.get("name", "")
+                if name in skip_names:
+                    continue
+                    
+                my_group = next((g for g in groups if isinstance(g, list) and name in g), None)
+                
+                if my_group and len(my_group) > 1:
+                    candidates = [n for n in my_group if n in res_dict]
+                    valid_candidates = []
+                    
+                    for n in candidates:
+                        d = res_dict[n]
+                        dp = res_paths.get(n)
+                        if dp and dp.exists():
+                            sz = sum(f.stat().st_size for f in dp.rglob("*") if f.is_file()) if dp.is_dir() else dp.stat().st_size
+                            is_local = 1 if d.get("source") == "local_resource" or d.get("staging_strategy") == "local_copy" else 0
+                            valid_candidates.append((n, is_local, sz, dp))
+                            
+                    if not valid_candidates:
+                        merged_resources.append(r)
+                        continue
+                        
+                    # Prioritize Local Resources first (1 vs 0), then fall back to directory size
+                    valid_candidates.sort(key=lambda x: (x[1], x[2]), reverse=True)
+                    canonical_name, canonical_is_local, canonical_size, canonical_path = valid_candidates[0]
+                    
+                    if name == canonical_name:
+                        merged_resources.append(r)
+                        self.log(f"Keeping '{name}' (local={bool(canonical_is_local)}) as canonical {res_type} for group: {my_group}")
+                    else:
+                        self.log(f"Semantic Deduplication: Removing duplicate '{name}' (duplicate of '{canonical_name}')")
+                        skip_names.add(name)
+                        dup_path = res_paths[name]
+                        if dup_path.exists() and dup_path != canonical_path:
+                            try:
+                                if dup_path.is_dir():
+                                    import shutil
+                                    shutil.rmtree(dup_path, ignore_errors=True)
+                                else:
+                                    dup_path.unlink()
+                            except Exception as e:
+                                self.log(f"Could not delete duplicate {dup_path}: {e}")
+                else:
+                    merged_resources.append(r)
+
+        # Cleanup aliases
+        filtered_aliases = [
+            a for a in workspace_aliases
+            if a.get("name") not in skip_names
+        ]
+                
+        for r in merged_resources:
+            r.pop("semantic_md", None)
+            
+        return merged_resources, filtered_aliases
 
     def _safe_alias_name(self, value: str, fallback: str) -> str:
         """Create a safe alias name for workspace resources."""
