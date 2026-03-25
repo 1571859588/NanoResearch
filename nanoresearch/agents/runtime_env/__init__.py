@@ -465,10 +465,24 @@ class RuntimeEnvironmentManager(
                 self._log(f"Creating isolated uv venv at {venv_dir} ...")
                 loop = asyncio.get_running_loop()
                 uv_bin = shutil.which("uv") or "uv"
+                
+                # Auto-inherit from experiment_conda_env if defined to 'clone' its heavy packages
+                base_python = None
+                if getattr(self.config, "experiment_conda_env", None):
+                    base_python = self.find_conda_python(self.config.experiment_conda_env.strip())
+                if not base_python and getattr(self.config, "experiment_python", None):
+                    base_python = self._resolve_user_python(self.config.experiment_python.strip())
+                
+                uv_args = [uv_bin, "venv"]
+                if base_python:
+                    self._log(f"Inheriting site-packages from base python: {base_python} (simulating clone)")
+                    uv_args.extend(["--system-site-packages", "--python", str(base_python)])
+                uv_args.append(str(venv_dir))
+
                 try:
                     await loop.run_in_executor(
                         None,
-                        lambda: subprocess.run([uv_bin, "venv", str(venv_dir)], check=True, capture_output=True)
+                        lambda: subprocess.run(uv_args, check=True, capture_output=True)
                     )
                     created = True
                     self._log(f"Venv created via uv (python: {python_path})")
