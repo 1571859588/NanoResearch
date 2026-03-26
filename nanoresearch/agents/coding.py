@@ -407,8 +407,8 @@ You are implementing the file `{file_spec['path']}`.
 ### File Specification (YOUR TASK):
 {json.dumps(file_spec, indent=2)}
 
-### Experiment Topic:
-{topic}
+### Experiment Name:
+{code_plan.get('project_name', 'The Experiment')}
 
 ### Blueprint:
 ```json
