@@ -254,6 +254,24 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
 
         abs_code_dir = code_dir.resolve()
         
+        # Parse traceback to find affected files
+        code_dir_str = str(abs_code_dir).replace("\\", "/")
+        tb_entries = _re.findall(r'File "([^"]+)",\s*line\s+(\d+)', stderr)
+        affected: list[tuple[Path, int]] = []
+        seen_files: set[str] = set()
+        for fpath, lineno in reversed(tb_entries):
+            resolved = Path(fpath).resolve()
+            resolved_norm = str(resolved).replace("\\", "/")
+            if code_dir_str not in resolved_norm:
+                continue
+            try:
+                rel = str(resolved.relative_to(abs_code_dir)).replace("\\", "/")
+            except ValueError:
+                continue
+            if rel not in seen_files and resolved.exists():
+                affected.append((resolved, int(lineno)))
+                seen_files.add(rel)
+
         # Build previous fix history
         fix_history = ""
         if previous_fixes:
