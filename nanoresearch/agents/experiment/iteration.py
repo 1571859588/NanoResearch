@@ -223,14 +223,14 @@ Output a JSON object with:
         
         escaped_prompt = shlex.quote(prompt)
         abs_code_dir = code_dir.resolve()
-        cmd = f"su - nyt_worker -c 'cd {abs_code_dir} && ccr restart && ccr code -p --permission-mode acceptEdits --dangerously-skip-permissions {escaped_prompt}'"
+        worker_cmd = f"cd {abs_code_dir} && ccr restart && ccr code -p --permission-mode acceptEdits --dangerously-skip-permissions {escaped_prompt}"
         
         self.log(f"Delegating iterative improvement application to Claude Code via: su - nyt_worker")
         
         modified_files: list[str] = []
         try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
+            proc = await asyncio.create_subprocess_exec(
+                "su", "-", "nyt_worker", "-c", worker_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )

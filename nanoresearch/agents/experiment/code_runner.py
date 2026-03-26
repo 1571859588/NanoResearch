@@ -286,13 +286,13 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
         )
         
         escaped_prompt = shlex.quote(prompt)
-        cmd = f"su - nyt_worker -c 'cd {abs_code_dir} && ccr restart && ccr code -p --permission-mode acceptEdits --dangerously-skip-permissions {escaped_prompt}'"
+        worker_cmd = f"cd {abs_code_dir} && ccr restart && ccr code -p --permission-mode acceptEdits --dangerously-skip-permissions {escaped_prompt}"
         
         self.log(f"Delegating repair to Claude Code via: su - nyt_worker")
         
         try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
+            proc = await asyncio.create_subprocess_exec(
+                "su", "-", "nyt_worker", "-c", worker_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
