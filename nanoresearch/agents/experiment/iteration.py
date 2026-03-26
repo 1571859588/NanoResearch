@@ -205,195 +205,54 @@ Output a JSON object with:
         2. Avoid accidental deletion of unchanged code
         3. Make changes auditable
         """
+        import asyncio
+        import shlex
+
         self._remember_mutation_snapshot_entry(None)
-        # Collect current file contents for context
-        file_contents: dict[str, str] = {}
-        for py_file in code_dir.rglob("*.py"):
-            parts = py_file.relative_to(code_dir).parts
-            if any(p.startswith(".") or p == "__pycache__" for p in parts):
-                continue
-            try:
-                rel = str(py_file.relative_to(code_dir)).replace("\\", "/")
-                content = py_file.read_text(encoding="utf-8", errors="replace")
-                file_contents[rel] = content
-            except OSError:
-                continue
-
-        # Also include config and other non-py files
-        for pattern in ("config/*.yaml", "config/*.yml", "*.txt", "*.sh"):
-            for f in code_dir.glob(pattern):
-                try:
-                    rel = str(f.relative_to(code_dir)).replace("\\", "/")
-                    file_contents[rel] = f.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    pass
-
-        files_summary = "\n".join(
-            f"--- {path} ---\n{content[:2000]}\n"
-            for path, content in file_contents.items()
+        
+        prompt = (
+            f"Apply the following improvement to the project.\n\n"
+            f"== Hypothesis ==\n"
+            f"{hypothesis.hypothesis}\n\n"
+            f"== Planned Changes ==\n"
+            f"{json.dumps(hypothesis.planned_changes, indent=2)}\n\n"
+            f"== Rationale ==\n"
+            f"{hypothesis.rationale}\n\n"
+            f"Make the necessary changes to the codebase. Do not explain, just edit and exit."
         )
-
-        prompt = f"""Apply the following changes to the experiment code project using SEARCH-REPLACE edits.
-
-== Hypothesis ==
-{hypothesis.hypothesis}
-
-== Planned Changes ==
-{json.dumps(hypothesis.planned_changes, indent=2)}
-
-== Rationale ==
-{hypothesis.rationale}
-
-== Current Files ==
-{files_summary[:15000]}
-
-Output a JSON array of edit operations. Two types are supported:
-
-1. **Search-replace edit** (preferred for modifying existing files):
-{{
-  "path": "relative/path.py",
-  "action": "edit",
-  "edits": [
-    {{"old": "exact text to find", "new": "replacement text"}}
-  ]
-}}
-
-2. **Full file write** (only for NEW files that don't exist yet):
-{{
-  "path": "relative/new_file.py",
-  "action": "write",
-  "content": "full file content"
-}}
-
-IMPORTANT RULES:
-- "old" must be an EXACT substring of the current file content (including whitespace/indentation)
-- Each "old" string must be unique within its file
-- Use search-replace for ALL modifications to existing files
-- Only use "write" action for creating brand new files
-- Multiple edits per file are fine — they are applied sequentially
-
-Output ONLY valid JSON array."""
-
+        
+        escaped_prompt = shlex.quote(prompt)
+        abs_code_dir = code_dir.resolve()
+        cmd = f"su - nyt_worker -c 'cd {abs_code_dir} && ccr restart && ccr code -p --permission-mode acceptEdits --dangerously-skip-permissions {escaped_prompt}'"
+        
+        self.log(f"Delegating iterative improvement application to Claude Code via: su - nyt_worker")
+        
         modified_files: list[str] = []
-        snapshot_batch: list[dict[str, Any]] = []
         try:
-            code_gen_config = self.config.for_stage("code_gen")
-            raw = await self._dispatcher.generate(
-                code_gen_config,
-                "You are an ML code editor. Apply precise search-replace edits to implement the hypothesis. Output ONLY a JSON array.",
-                prompt,
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
-            changes = self._parse_llm_json_payload(raw)
-            if not isinstance(changes, list):
-                changes = [changes]
-
-            for change in changes:
-                if not isinstance(change, dict) or "path" not in change:
-                    continue
-                file_path = change["path"]
-                # Security: prevent directory traversal
-                try:
-                    (code_dir / file_path).resolve().relative_to(code_dir.resolve())
-                except ValueError:
-                    logger.warning("Skipping unsafe iteration path: %s", file_path)
-                    continue
-
-                action = change.get("action", "write")  # backwards compat
-
-                if action == "edit":
-                    # Search-replace mode
-                    edits = change.get("edits", [])
-                    if not edits:
-                        continue
-                    # Read current content
-                    target = code_dir / file_path
-                    if not target.exists():
-                        logger.warning("Edit target does not exist: %s", file_path)
-                        continue
-                    try:
-                        current = target.read_text(encoding="utf-8", errors="replace")
-                    except OSError:
-                        continue
-
-                    applied = 0
-                    for edit in edits:
-                        if not isinstance(edit, dict):
-                            continue
-                        old = edit.get("old", "")
-                        new = edit.get("new", "")
-                        if not old:
-                            continue
-                        current, matched, match_strategy = self._apply_search_replace_edit(
-                            current, old, new,
-                        )
-                        if matched:
-                            applied += 1
-                            self.log(f"  Matched edit in {file_path} via {match_strategy}")
-                        else:
-                            logger.warning(
-                                "Edit old text not found in %s: %s",
-                                file_path, old[:80],
-                            )
-
-                    if applied > 0:
-                        target_path = code_dir / file_path
-                        target_path.parent.mkdir(parents=True, exist_ok=True)
-                        snapshot = capture_repair_snapshot(
-                            self.workspace.path, target_path,
-                            namespace="iteration_changes",
-                            root_dir=self.workspace.path, operation="rewrite",
-                        )
-                        target_path.write_text(current, encoding="utf-8")
-                        if target_path.suffix.lower() == ".py" and not self._check_syntax(target_path):
-                            self.log(f"  Edited file became invalid Python in {file_path}, rolling back")
-                            rollback_snapshot(self.workspace.path, target_path, snapshot)
-                            snapshot["rolled_back"] = True
-                            snapshot["rollback_reason"] = "syntax_error"
-                            snapshot_batch.append(snapshot)
-                            continue
-
-                        modified_files.append(file_path)
-                        snapshot_batch.append(snapshot)
-                        self.log(f"  Edited: {file_path} ({applied}/{len(edits)} edits applied)")
-                else:
-                    # Full write mode (new files or backwards compat)
-                    content = change.get("content", "")
-                    if not content:
-                        continue
-                    target_path = code_dir / file_path
-                    existed_before = target_path.exists()
-                    snapshot = capture_repair_snapshot(
-                        self.workspace.path, target_path,
-                        namespace="iteration_changes",
-                        root_dir=self.workspace.path,
-                        existed_before=existed_before,
-                        operation="rewrite" if existed_before else "create",
-                    )
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    target_path.write_text(content, encoding="utf-8")
-                    if target_path.suffix.lower() == ".py" and not self._check_syntax(target_path):
-                        self.log(f"  Wrote invalid Python in {file_path}, rolling back")
-                        rollback_snapshot(self.workspace.path, target_path, snapshot)
-                        snapshot["rolled_back"] = True
-                        snapshot["rollback_reason"] = "syntax_error"
-                        snapshot_batch.append(snapshot)
-                        continue
-
-                    modified_files.append(file_path)
-                    snapshot_batch.append(snapshot)
-                    self.log(f"  Wrote: {file_path}")
-
+            stdout, stderr_out = await asyncio.wait_for(proc.communicate(), timeout=600)
+            
+            if proc.returncode == 0:
+                self.log(f"Claude Code iteration completed successfully.")
+                modified_files = ["auto-fixed-iterative-ccr"]
+            else:
+                stderr_text = stderr_out.decode('utf-8', errors='replace')
+                self.log(f"Claude Code returned non-zero (return_code={proc.returncode}):\n{stderr_text}")
+                stdout_text = stdout.decode('utf-8', errors='replace')
+                if "edited" in stdout_text.lower() or "saved" in stdout_text.lower():
+                    self.log("Claude Code returned non-zero but possibly made edits. Continuing.")
+                    modified_files = ["auto-fixed-iterative-ccr-partial"]
+        except asyncio.TimeoutError:
+            self.log("Claude Code execution timed out after 10 minutes.")
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
         except Exception as exc:
-            logger.warning("Failed to apply iteration changes: %s", exc)
+            logger.warning("Failed to apply iteration changes via ccr: %s", exc)
 
-        if snapshot_batch:
-            entry = append_snapshot_journal(
-                self.workspace.path,
-                agent=self.__class__.__name__,
-                mutation_kind="iteration_changes",
-                scope="legacy_iteration_search_replace",
-                snapshots=snapshot_batch,
-                metadata={"modified_files": list(modified_files)},
-            )
-            self._remember_mutation_snapshot_entry(entry)
         return modified_files

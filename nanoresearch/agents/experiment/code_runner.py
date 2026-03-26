@@ -249,213 +249,77 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
         """
         import re as _re
 
-        # 1. Parse traceback to find affected files with line numbers
-        code_dir_str = str(code_dir.resolve()).replace("\\", "/")
-        # Match: File "path", line N, in func
-        tb_entries = _re.findall(
-            r'File "([^"]+)",\s*line\s+(\d+)', stderr
-        )
+        import asyncio
+        import shlex
 
-        # Deduplicate and filter to project files only (deepest frame first)
-        affected: list[tuple[Path, int]] = []
-        seen_files: set[str] = set()
-        for fpath, lineno in reversed(tb_entries):
-            f_norm = fpath.replace("\\", "/")
-            resolved = Path(fpath).resolve()
-            resolved_norm = str(resolved).replace("\\", "/")
-            if code_dir_str not in resolved_norm:
-                continue
-            try:
-                rel = str(resolved.relative_to(code_dir.resolve())).replace("\\", "/")
-            except ValueError:
-                continue
-            if rel not in seen_files and resolved.exists():
-                affected.append((resolved, int(lineno)))
-                seen_files.add(rel)
-
-        # If no project files found, default to main.py
-        if not affected:
-            main_py = code_dir / "main.py"
-            if main_py.exists():
-                affected = [(main_py, 0)]
-
-        if not affected:
-            return []
-
-        # 2. Extract the final error message
-        error_lines = stderr.strip().split("\n")
-        error_msg = ""
-        for line in reversed(error_lines):
-            line = line.strip()
-            if line and not line.startswith("File ") and not line.startswith("Traceback"):
-                error_msg = line
-                break
-
-        # 3. Gather context: config files, requirements, workspace structure
-        context_files: list[str] = []
+        abs_code_dir = code_dir.resolve()
         
-        # Read EXP_WORKSPACE.md to give the autofix LLM a holistic view of the project
-        exp_workspace_md = code_dir / "EXP_WORKSPACE.md"
-        if exp_workspace_md.exists():
-            try:
-                ctx = exp_workspace_md.read_text(encoding="utf-8", errors="replace")
-                context_files.append(f"--- EXP_WORKSPACE.md ---\n{ctx}")
-            except OSError:
-                pass
-
-        for pattern in ("config/*.yaml", "config/*.yml", "config/*.json",
-                        "*.yaml", "*.yml", "requirements.txt"):
-            for cf in code_dir.glob(pattern):
-                if cf.is_file():
-                    try:
-                        rel = str(cf.relative_to(code_dir)).replace("\\", "/")
-                        ctx = cf.read_text(encoding="utf-8", errors="replace")[:1500]
-                        context_files.append(f"--- {rel} ---\n{ctx}")
-                    except OSError:
-                        pass
-        config_context = "\n\n".join(context_files) if context_files else "(no config files)"
-
-        # Also list all project files for reference
-        all_files = []
-        for f in sorted(code_dir.rglob("*")):
-            if f.is_file() and "__pycache__" not in str(f):
-                all_files.append(str(f.relative_to(code_dir)).replace("\\", "/"))
-        file_list = "\n".join(f"  {f}" for f in all_files)
-
-        # 4. Fix each affected file with a targeted LLM call
-        flag = "--quick-eval" if mode == "quick-eval" else "--dry-run"
-        modified: list[str] = []
-        code_gen_config = self.config.for_stage("code_gen")
-
-        for target_file, error_line in affected:
-            # target_file is absolute (from resolve()), so code_dir must be resolved too
-            rel_path = str(target_file.relative_to(code_dir.resolve())).replace("\\", "/")
-            try:
-                content = target_file.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-
-            # Show context around the error line (+-15 lines)
-            lines = content.split("\n")
-            if error_line > 0:
-                start = max(0, error_line - 16)
-                end = min(len(lines), error_line + 15)
-                context_snippet = "\n".join(
-                    f"{'>>>' if i+1 == error_line else '   '} {i+1:4d} | {l}"
-                    for i, l in enumerate(lines[start:end], start=start)
+        # Build previous fix history
+        fix_history = ""
+        if previous_fixes:
+            fix_history = (
+                "\n\nPrevious fix attempts that did NOT resolve the problem:\n"
+                + "\n".join(
+                    (
+                        f"  Round {i+1}: "
+                        f"{fx.get('diagnosis', fx.get('error_msg', ''))[:200]}"
+                    )
+                    for i, fx in enumerate(previous_fixes)
                 )
+                + "\nDo NOT repeat the same fixes. Try a different approach.\n"
+            )
+
+        extra_context_text = (
+            f"Additional execution context:\n{extra_context}\n\n"
+            if extra_context.strip()
+            else ""
+        )
+        
+        prompt = (
+            f"Please fix the following python execution crash. "
+            f"You may read and edit any files necessary to fix the crash. "
+            f"Important: Do not explain, just make the edits and exit.\n\n"
+            f"Error details:\n"
+            f"{stderr[-6000:]}\n\n"
+            f"{extra_context_text}"
+            f"{fix_history}"
+        )
+        
+        escaped_prompt = shlex.quote(prompt)
+        cmd = f"su - nyt_worker -c 'cd {abs_code_dir} && ccr restart && ccr code -p --permission-mode acceptEdits --dangerously-skip-permissions {escaped_prompt}'"
+        
+        self.log(f"Delegating repair to Claude Code via: su - nyt_worker")
+        
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            # Since Claude Code might take a while, wait up to 10 minutes
+            stdout, stderr_out = await asyncio.wait_for(proc.communicate(), timeout=600)
+            
+            if proc.returncode == 0:
+                self.log(f"Claude Code auto-fix completed successfully.")
+                return ["auto-fixed-by-ccr"]
             else:
-                context_snippet = content[:2000]
-
-            # Build previous fix history to avoid repeating failed fixes
-            fix_history = ""
-            if previous_fixes:
-                fix_history = (
-                    "\n\nPrevious fix attempts that did NOT resolve the problem:\n"
-                    + "\n".join(
-                        (
-                            f"  Round {i+1}: "
-                            f"{fx.get('diagnosis', fx.get('error_msg', ''))[:200]}"
-                            + (
-                                f" | repeated={fx.get('repeat_count')}"
-                                if fx.get("repeat_count", 1) > 1
-                                else ""
-                            )
-                            + (
-                                f" | files={fx.get('fixed_files', [])}"
-                                if fx.get("fixed_files")
-                                else ""
-                            )
-                        )
-                        for i, fx in enumerate(previous_fixes)
-                    )
-                    + "\nDo NOT repeat the same fixes. Try a different approach.\n"
-                )
-
-            extra_context_text = (
-                f"Additional execution context:\n{extra_context}\n\n"
-                if extra_context.strip()
-                else ""
-            )
-            fix_prompt = (
-                f"`python main.py {flag}` failed.\n\n"
-                f"Error: {error_msg}\n\n"
-                f"Full traceback (last 40 lines):\n```\n"
-                f"{chr(10).join(error_lines[-40:])}\n```\n\n"
-                f"{extra_context_text}"
-                f"File: {rel_path} (error around line {error_line}):\n```python\n"
-                f"{context_snippet}\n```\n\n"
-                f"Full file ({len(lines)} lines):\n```python\n{content[:4000]}\n```\n\n"
-                f"== Config / Data Files (for reference) ==\n{config_context}\n\n"
-                f"== Project Files ==\n{file_list}\n"
-                f"{fix_history}\n"
-                f"Output a JSON array of search-replace edits:\n"
-                f'[{{"old": "exact text to find", "new": "replacement text"}}]\n\n'
-                f"Rules:\n"
-                f"- 'old' must be an EXACT substring of the file (including indentation)\n"
-                f"- Multiple edits are fine — fix ALL issues in this file\n"
-                f"- If config is YAML, use yaml.safe_load(), NOT json.load()\n"
-                f"- Ensure imports match actual module structure\n"
-                f"- Output ONLY valid JSON array, no markdown"
-            )
-
+                stderr_text = stderr_out.decode('utf-8', errors='replace')
+                self.log(f"Claude Code returned non-zero (return_code={proc.returncode}):\n{stderr_text}")
+                # Sometimes it makes changes but exits with non-zero.
+                stdout_text = stdout.decode('utf-8', errors='replace')
+                if "edited" in stdout_text.lower() or "saved" in stdout_text.lower():
+                    self.log("Claude Code returned non-zero but possibly made edits. Continuing.")
+                    return ["auto-fixed-by-ccr-partial"]
+                return []
+                
+        except asyncio.TimeoutError:
+            self.log("Claude Code execution timed out after 10 minutes.")
             try:
-                raw = await self._dispatcher.generate(
-                    code_gen_config,
-                    f"You are a Python debugging expert. Fix the bug in {rel_path} using precise search-replace edits.",
-                    fix_prompt,
-                )
-                edits = self._parse_llm_json_payload(raw)
-                if not isinstance(edits, list):
-                    edits = [edits]
-
-                # Save backup for syntax rollback
-                backup_content = content
-                applied = 0
-                for edit in edits:
-                    if not isinstance(edit, dict):
-                        continue
-                    old = edit.get("old", "")
-                    new = edit.get("new", "")
-                    if not old:
-                        continue
-                    content, matched, match_strategy = self._apply_search_replace_edit(
-                        content,
-                        old,
-                        new,
-                    )
-                    if matched:
-                        applied += 1
-                        self.log(f"  Patch matched in {rel_path} via {match_strategy}")
-
-                if applied > 0:
-                    # Syntax validation + rollback (borrowed from Deep Pipeline DebugAgent)
-                    target_file.write_text(content, encoding="utf-8")
-                    if target_file.suffix == ".py" and not self._check_syntax(target_file):
-                        self.log(f"  Patch introduced syntax error in {rel_path}, rolling back")
-                        target_file.write_text(backup_content, encoding="utf-8")
-                    else:
-                        modified.append(rel_path)
-                        self.log(f"  Fixed {rel_path}: {applied} edit(s) applied")
-                else:
-                    self.log(f"  No edits matched in {rel_path}")
-
-            except json.JSONDecodeError:
-                # Fallback: LLM might return the full fixed file
-                if raw and len(raw) > 50:
-                    target_file.write_text(raw, encoding="utf-8")
-                    if target_file.suffix == ".py" and not self._check_syntax(target_file):
-                        self.log(f"  Fallback rewrite has syntax error in {rel_path}, rolling back")
-                        target_file.write_text(content, encoding="utf-8")
-                    else:
-                        modified.append(rel_path)
-                        self.log(f"  Rewrote {rel_path} (fallback)")
-            except Exception as e:
-                self.log(f"  Fix failed for {rel_path}: {e}")
-
-        if modified:
-            self.log(f"Batch fix: modified {len(modified)} files")
-        else:
-            self.log("Batch fix: no files were modified")
-
-        return modified
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            return []
+        except Exception as e:
+            self.log(f"Failed to execute Claude Code repair: {e}")
+            return []

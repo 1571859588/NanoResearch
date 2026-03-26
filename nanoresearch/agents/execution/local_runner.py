@@ -141,11 +141,7 @@ class _LocalRunnerMixin(
                         runtime_python,
                     )
                     if not files_modified and latest_hypothesis.planned_changes:
-                        self.log("Search-replace matched nothing, retrying with full-file rewrite")
-                        files_modified = await helper._apply_iteration_changes_fullwrite(
-                            latest_hypothesis,
-                            code_dir,
-                        )
+                        self.log("Claude Code iteration failed to modify any files.")
 
                 preflight = PreflightChecker(code_dir).run_all()
                 self.workspace.write_json(
