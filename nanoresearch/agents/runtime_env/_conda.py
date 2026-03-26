@@ -51,8 +51,8 @@ class _CondaMixin:
         if conda_python:
             self._log(f"Reusing existing conda env '{env_name}': {conda_python}")
         else:
-            # 2. Clone from source env if configured
-            clone_source = (self.config.experiment_clone_source or "").strip()
+            # 2. Clone from source env if configured (or clone experiment_conda_env as fallback)
+            clone_source = (self.config.experiment_clone_source or self.config.experiment_conda_env or "").strip()
             if clone_source:
                 freshly_created = await self._clone_conda_env(
                     env_name, clone_source, cmd

@@ -244,13 +244,13 @@ class RuntimeEnvironmentManager(
                 )
             return "conda", True
 
-        # "auto" — prefer uv, then conda when available
+        # "auto" — user requested default to conda if available
+        if _find_conda() is not None:
+            self._log("Auto-detected conda — using conda backend by default")
+            return "conda", False
         if shutil.which("uv") is not None:
             self._log("Auto-detected uv — using uv backend")
             return "uv", False
-        if _find_conda() is not None:
-            self._log("Auto-detected conda — using conda backend")
-            return "conda", False
         return "venv", False
 
     def _per_session_env_name(self) -> str:
@@ -265,10 +265,11 @@ class RuntimeEnvironmentManager(
         from datetime import date
 
         # Build base name
+        base_env = (self.config.experiment_conda_env or "research").strip()
         prefix = (self.config.experiment_conda_env_prefix or "").strip()
         if prefix:
             # User-specified prefix
-            base_name = f"research_{prefix}"
+            base_name = f"{base_env}_{prefix}"
         else:
             # Auto-generate from session label
             label = re.sub(r'[^A-Za-z0-9_-]', '_', self._session_label)[:30].strip('_')
@@ -277,7 +278,7 @@ class RuntimeEnvironmentManager(
                     _hl.md5(self._session_label.encode()).hexdigest()[:10]
                     if self._session_label else "default"
                 )
-            base_name = f"research_{label}"
+            base_name = f"{base_env}_{label}"
 
         # Check for collision and add suffix if needed
         # First try to find the conda env path
@@ -301,42 +302,31 @@ class RuntimeEnvironmentManager(
         return base_name
 
     def _resolve_env_collision(self, base_name: str, existing_envs: list[str]) -> str:
-        """Resolve name collision by adding date/counter suffix.
-
-        Strategy:
-        - Check if any existing env starts with base_name
-        - If same-day env exists, use counter (base_YYYYMMDD_2, base_YYYYMMDD_3, ...)
-        - If no same-day env, add just date (base_YYYYMMDD)
+        """Resolve name collision by appending a sequential number (1, 2, 3...)
+        directly to the base_name. e.g. base_name1, base_name2.
         """
-        from datetime import date
-
-        today = date.today().strftime("%Y%m%d")
-        today_prefix = f"{base_name}_{today}"
-
-        # Collect all envs that match base_name or base_YYYYMMDD pattern
-        today_envs = []
+        # Collect all numeric suffixes currently in use for this base_name
+        counters = []
+        
         for env_path in existing_envs:
             env_name = Path(env_path).name
+            
+            # If it's an exact match, the un-suffixed version exists
             if env_name == base_name:
-                # Base name itself exists (from previous day)
-                return today_prefix
-            if env_name.startswith(f"{base_name}_{today}_"):
-                today_envs.append(env_name)
-
-        if not today_envs:
-            # No same-day collision, use date suffix
-            return today_prefix
-
-        # Find next counter
-        counters = []
-        for env_name in today_envs:
-            # Parse base_YYYYMMDD_N pattern
-            match = re.match(rf"^{re.escape(base_name)}_{today}_(\d+)$", env_name)
+                counters.append(0)
+                continue
+                
+            # Check for sequential suffix
+            match = re.match(rf"^{re.escape(base_name)}(\d+)$", env_name)
             if match:
                 counters.append(int(match.group(1)))
 
-        next_counter = max(counters, default=1) + 1
-        return f"{base_name}_{today}_{next_counter}"
+        if not counters:
+            return base_name
+
+        # The next available sequential number
+        next_counter = max(counters) + 1
+        return f"{base_name}{next_counter}"
 
     # ------------------------------------------------------------------
     # Per-session conda environment
@@ -388,10 +378,16 @@ class RuntimeEnvironmentManager(
 
         # ----- Priority 1: explicit named conda env from config ----------
         conda_env = self.config.experiment_conda_env.strip()
-        if conda_env and not force_isolated:
+        backend, backend_forced = self._resolve_backend()
+
+        # If user explicitly requested uv or per-session isolation via auto_create_env,
+        # we skip directly reusing the base conda environment and proceed to Priority 2.
+        skip_direct_reuse = force_isolated or backend == "uv" or self.config.auto_create_env
+
+        if conda_env and not skip_direct_reuse:
             conda_python = self.find_conda_python(conda_env)
             if conda_python:
-                self._log(f"Using existing conda env '{conda_env}': {conda_python}")
+                self._log(f"Using existing conda env '{conda_env}' directly: {conda_python}")
                 install_info = await self.install_requirements(conda_python, code_dir)
                 runtime_validation = await self.validate_runtime(
                     conda_python,
@@ -409,35 +405,9 @@ class RuntimeEnvironmentManager(
                     "runtime_validation_repair": {"status": "skipped", "actions": []},
                     "execution_policy": execution_policy.to_dict(),
                 }
-            if self.config.auto_create_env and _find_conda() is not None:
-                created = await self.create_conda_env(conda_env, code_dir)
-                if created:
-                    conda_python = self.find_conda_python(conda_env)
-                    if conda_python:
-                        install_info = await self.install_requirements(conda_python, code_dir)
-                        runtime_validation = await self.validate_runtime(
-                            conda_python, code_dir, execution_policy=execution_policy,
-                        )
-                        return {
-                            "kind": "conda",
-                            "python": conda_python,
-                            "env_name": conda_env,
-                            "created": True,
-                            "requirements_path": str(requirements_path) if requirements_path.exists() else "",
-                            "environment_file": str(environment_file) if environment_file else "",
-                            "dependency_install": install_info,
-                            "runtime_validation": runtime_validation,
-                            "runtime_validation_repair": {"status": "skipped", "actions": []},
-                            "execution_policy": execution_policy.to_dict(),
-                        }
-            self._log(f"Conda env '{conda_env}' not found, falling back to venv")
+            self._log(f"Conda env '{conda_env}' not found, falling back to isolation")
 
         # ----- Priority 2: auto / forced backend selection ---------------
-        if not force_isolated:
-            backend, backend_forced = self._resolve_backend()
-        else:
-            backend, backend_forced = "venv", False
-
         if backend == "conda":
             env_info = await self._create_per_session_conda_env(code_dir, execution_policy)
             if env_info:
