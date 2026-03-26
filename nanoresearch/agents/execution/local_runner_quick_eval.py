@@ -42,8 +42,10 @@ class _LocalRunnerQuickEvalMixin(_LocalRunnerQERecoveryMixin):
             training_log_mtime_before = (
                 training_log_path.stat().st_mtime if training_log_path.exists() else None
             )
+            cmd = self._command_with_mode(base_command, "--quick-eval")
+            self.log(f"Running quick-eval command: {' '.join(cmd)}")
             result = await self._run_subprocess(
-                self._command_with_mode(base_command, "--quick-eval"),
+                cmd,
                 cwd=code_dir,
                 timeout=timeout,
             )
@@ -113,6 +115,7 @@ class _LocalRunnerQuickEvalMixin(_LocalRunnerQERecoveryMixin):
                 return augmented
 
             if result["returncode"] == -1:
+                self.log(f"Quick-eval timed out after {timeout}s.")
                 recovery = self._handle_quick_eval_timeout_recovery(
                     code_dir,
                     result,
@@ -129,6 +132,10 @@ class _LocalRunnerQuickEvalMixin(_LocalRunnerQERecoveryMixin):
 
             if cycle >= max_fix_cycles:
                 break
+            
+            # Subprocess failed (returncode > 0) or timed out (returncode == -1)
+            if result["returncode"] > 0:
+                self.log(f"Subprocess crashed with return code {result['returncode']}:\n--- stdout ---\n{result.get('stdout', '')}\n--- stderr ---\n{result.get('stderr', '')}")
 
             if result["returncode"] == -1 and "timed out" in result.get("stderr", "").lower():
                 resume_fix = self._attempt_resume_repair(
