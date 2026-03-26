@@ -28,11 +28,12 @@ class _LocalRunnerDryRunMixin:
         round_number: int | None = None,
     ) -> dict[str, Any]:
         """Run dry-run with iterative batch-fix cycles."""
-        max_fix_cycles = 5
+        max_total_cycles = 15
+        max_repeated_errors = 3
         last_result: dict[str, Any] = {}
         fix_history: list[dict[str, Any]] = []
 
-        for cycle in range(1, max_fix_cycles + 1):
+        for cycle in range(1, max_total_cycles + 1):
             # Use local_execution_timeout (default 1800s) instead of the
             # previous hardcoded 120s.  Dataset downloads + model init can
             # easily exceed 2 minutes on first run.
@@ -47,14 +48,15 @@ class _LocalRunnerDryRunMixin:
                 status = "success" if cycle == 1 else "fixed"
                 return {"status": status, "attempts": cycle, **result}
 
-            if cycle >= max_fix_cycles:
-                break
-                
+            signature = self._repair_error_signature(result)
+            repeat_count = self._repair_repeat_count(fix_history, signature)
+            
             if result["returncode"] > 0:
                 self.log(f"Dry-run subprocess crashed with return code {result['returncode']}:\n--- stdout ---\n{result.get('stdout', '')}\n--- stderr ---\n{result.get('stderr', '')}")
-
-            repair_text = self._repair_error_text(result)
-            signature = self._repair_error_signature(result)
+                
+                if repeat_count >= max_repeated_errors:
+                    self.log(f"Dry-run error signature '{signature}' repeated {repeat_count} times. Assuming unfixable stagnation.")
+                    break
             repeat_count = self._repair_repeat_count(fix_history, signature)
             deterministic_fix = self._attempt_resource_path_repair(
                 code_dir,
@@ -267,7 +269,6 @@ class _LocalRunnerDryRunMixin:
                 reason="" if modified else "no_files_modified",
                 files=list(modified or []),
             )
-            if not modified:
-                break
+            # Removed immediate break to allow retries on transient CCR API timeouts
 
         return {"status": "failed", "attempts": cycle, **last_result}

@@ -31,13 +31,14 @@ class _LocalRunnerQuickEvalMixin(_LocalRunnerQERecoveryMixin):
     ) -> dict[str, Any]:
         """Run quick-eval with timeout handling and batch-fix cycles."""
         timeout = self.config.quick_eval_timeout
-        max_fix_cycles = 5
+        max_total_cycles = 15
+        max_repeated_errors = 3
         last_result: dict[str, Any] = {}
         fix_history: list[dict[str, Any]] = []
 
         metrics_path = code_dir / "results" / "metrics.json"
         training_log_path = code_dir / "results" / "training_log.csv"
-        for cycle in range(1, max_fix_cycles + 1):
+        for cycle in range(1, max_total_cycles + 1):
             mtime_before = metrics_path.stat().st_mtime if metrics_path.exists() else None
             training_log_mtime_before = (
                 training_log_path.stat().st_mtime if training_log_path.exists() else None
@@ -130,12 +131,15 @@ class _LocalRunnerQuickEvalMixin(_LocalRunnerQERecoveryMixin):
                 if recovery is not None:
                     return recovery
 
-            if cycle >= max_fix_cycles:
-                break
-            
-            # Subprocess failed (returncode > 0) or timed out (returncode == -1)
             if result["returncode"] > 0:
                 self.log(f"Subprocess crashed with return code {result['returncode']}:\n--- stdout ---\n{result.get('stdout', '')}\n--- stderr ---\n{result.get('stderr', '')}")
+                
+                # Check dynamic stagnation limit
+                sig = self._repair_error_signature(result)
+                rep_count = self._repair_repeat_count(fix_history, sig)
+                if rep_count >= max_repeated_errors:
+                    self.log(f"Quick-eval error signature '{sig}' repeated {rep_count} times. Assuming unfixable stagnation.")
+                    break
 
             if result["returncode"] == -1 and "timed out" in result.get("stderr", "").lower():
                 resume_fix = self._attempt_resume_repair(
@@ -454,7 +458,6 @@ class _LocalRunnerQuickEvalMixin(_LocalRunnerQERecoveryMixin):
                     reason="" if modified else "no_files_modified",
                     files=list(modified or []),
                 )
-            if not modified:
-                break
-
-        return {"status": "failed", "metrics": {}, "attempts": cycle, **last_result}
+            # Removed the strict 'if not modified: break' to allow retries on transient ccr API timeouts
+            
+        return {"status": "failed", "attempts": cycle, **last_result}, [], {}
