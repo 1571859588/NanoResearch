@@ -275,18 +275,33 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
             else ""
         )
         
+        files_to_check = ", ".join([str(p.name) for p, _ in affected]) if affected else "the project files"
+        
         prompt = (
-            f"Please fix the following python execution crash. "
-            f"You may read and edit any files necessary to fix the crash. "
-            f"If the error details below are incomplete, please check the 'logs' or 'results' directories for full application log files. "
-            f"Important: Do not explain, just make the edits and exit.\n\n"
+            f"Fix the python execution crash in: {files_to_check}. "
+            f"Important: Do not read logs or massive files, just focus on the code. Do not explain, just make the edits and exit.\n\n"
             f"Error details:\n"
-            f"{stderr[-6000:]}\n\n"
+            f"{stderr[-2000:]}\n"
             f"{extra_context_text}"
             f"{fix_history}"
         )
         
         escaped_prompt = shlex.quote(prompt)
+        
+        # Defensively protect Claude Code's context window from massive logs/outputs
+        try:
+            ignore_file = abs_code_dir / ".gitignore"
+            ignores = {"logs/", "results/", "checkpoints/", "__pycache__/", "datasets/", "models/", "outputs/", "figures/"}
+            existing = set()
+            if ignore_file.exists():
+                existing = set(ignore_file.read_text(encoding="utf-8").splitlines())
+            missing = ignores - existing
+            if missing:
+                with ignore_file.open("a", encoding="utf-8") as f:
+                    f.write("\n" + "\n".join(missing) + "\n")
+        except OSError:
+            pass
+
         worker_cmd = f"cd {abs_code_dir} && ccr restart && ccr code -p --permission-mode acceptEdits --dangerously-skip-permissions {escaped_prompt}"
         
         self.log(f"Delegating repair to Claude Code via: su - nyt_worker")

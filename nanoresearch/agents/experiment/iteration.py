@@ -212,17 +212,28 @@ Output a JSON object with:
         
         prompt = (
             f"Apply the following improvement to the project.\n\n"
-            f"== Hypothesis ==\n"
-            f"{hypothesis.hypothesis}\n\n"
             f"== Planned Changes ==\n"
             f"{json.dumps(hypothesis.planned_changes, indent=2)}\n\n"
-            f"== Rationale ==\n"
-            f"{hypothesis.rationale}\n\n"
-            f"Make the necessary changes to the codebase. Do not explain, just edit and exit."
+            f"Important: Only edit the files necessary. Do not explain, just edit and exit."
         )
         
         escaped_prompt = shlex.quote(prompt)
         abs_code_dir = code_dir.resolve()
+        
+        # Defensively protect Claude Code's context window from massive logs/outputs
+        try:
+            ignore_file = abs_code_dir / ".gitignore"
+            ignores = {"logs/", "results/", "checkpoints/", "__pycache__/", "datasets/", "models/", "outputs/", "figures/"}
+            existing = set()
+            if ignore_file.exists():
+                existing = set(ignore_file.read_text(encoding="utf-8").splitlines())
+            missing = ignores - existing
+            if missing:
+                with ignore_file.open("a", encoding="utf-8") as f:
+                    f.write("\n" + "\n".join(missing) + "\n")
+        except OSError:
+            pass
+
         worker_cmd = f"cd {abs_code_dir} && ccr restart && ccr code -p --permission-mode acceptEdits --dangerously-skip-permissions {escaped_prompt}"
         
         self.log(f"Delegating iterative improvement application to Claude Code via: su - nyt_worker")
