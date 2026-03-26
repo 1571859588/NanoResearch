@@ -49,6 +49,9 @@ class _LocalRunnerDryRunMixin:
 
             if cycle >= max_fix_cycles:
                 break
+                
+            if result["returncode"] > 0:
+                self.log(f"Dry-run subprocess crashed with return code {result['returncode']}:\n--- stdout ---\n{result.get('stdout', '')}\n--- stderr ---\n{result.get('stderr', '')}")
 
             repair_text = self._repair_error_text(result)
             signature = self._repair_error_signature(result)

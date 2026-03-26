@@ -247,12 +247,13 @@ Output a JSON object with:
             )
             stdout, stderr_out = await asyncio.wait_for(proc.communicate(), timeout=600)
             
+            stdout_text = stdout.decode('utf-8', errors='replace')
+            stderr_text = stderr_out.decode('utf-8', errors='replace')
+            
             if proc.returncode == 0:
-                self.log(f"Claude Code iteration completed successfully.")
+                self.log(f"Claude Code iteration completed successfully.\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
                 modified_files = ["auto-fixed-iterative-ccr"]
             else:
-                stderr_text = stderr_out.decode('utf-8', errors='replace')
-                stdout_text = stdout.decode('utf-8', errors='replace')
                 self.log(f"Claude Code returned non-zero (return_code={proc.returncode}):\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
                 if "edited" in stdout_text.lower() or "saved" in stdout_text.lower():
                     self.log("Claude Code returned non-zero but possibly made edits. Continuing.")

@@ -334,12 +334,13 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
             # Since Claude Code might take a while, wait up to 10 minutes
             stdout, stderr_out = await asyncio.wait_for(proc.communicate(), timeout=600)
             
+            stdout_text = stdout.decode('utf-8', errors='replace')
+            stderr_text = stderr_out.decode('utf-8', errors='replace')
+            
             if proc.returncode == 0:
-                self.log(f"Claude Code auto-fix completed successfully.")
+                self.log(f"Claude Code auto-fix completed successfully.\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
                 return ["auto-fixed-by-ccr"]
             else:
-                stderr_text = stderr_out.decode('utf-8', errors='replace')
-                stdout_text = stdout.decode('utf-8', errors='replace')
                 self.log(f"Claude Code returned non-zero (return_code={proc.returncode}):\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
                 # Sometimes it makes changes but exits with non-zero.
                 if "edited" in stdout_text.lower() or "saved" in stdout_text.lower():
