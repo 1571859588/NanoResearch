@@ -57,7 +57,8 @@ class _LocalRunnerDryRunMixin:
                 if repeat_count >= max_repeated_errors:
                     self.log(f"Dry-run error signature '{signature}' repeated {repeat_count} times. Assuming unfixable stagnation.")
                     break
-            repeat_count = self._repair_repeat_count(fix_history, signature)
+            
+            repair_text = self._repair_error_text(result)
             deterministic_fix = self._attempt_resource_path_repair(
                 code_dir,
                 repair_text,
