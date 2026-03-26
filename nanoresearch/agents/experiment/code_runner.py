@@ -248,42 +248,6 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
         Returns list of modified file paths.
         """
         import re as _re
-        import shutil
-        
-        # 0. Check for external Auto-Coder CLI (like 'ccr code' or 'aider')
-        # This provides a massively more robust autonomous repair by delegating
-        # the workspace fixing to a dedicated agentic coder if installed.
-        has_ccr = shutil.which("ccr") is not None
-        if has_ccr:
-            self.log("Invoking external auto-coder (`ccr code`) for autonomous workspace repair...")
-            cli_prompt = (
-                f"The command `python main.py {mode}` failed with the following traceback:\n"
-                f"{stderr}\n\n"
-                f"Please analyze the workspace, fix the bugs, and ensure the code is runnable."
-            )
-            # Assuming 'ccr code' takes the prompt as an argument.
-            try:
-                proc = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    lambda: subprocess.run(
-                        # We pass -y/--yes assuming the CLI supports auto-confirming edits.
-                        # We use input="y\\n" * 50 to pipe 'yes' to any standard prompts.
-                        ["ccr", "code", "-y", cli_prompt],
-                        cwd=str(code_dir),
-                        capture_output=True, 
-                        text=True, 
-                        timeout=600,
-                        input="y\n" * 50  # Provide a bunch of implicit 'yes' answers
-                    )
-                )
-                if proc.returncode == 0:
-                    self.log(f"Auto-coder completed successfully: {proc.stdout[:200]}...")
-                    # Return a generic 'modified' flag so the orchestrator retries
-                    return ["auto-coder-fixed-workspace"]
-                else:
-                    self.log(f"Auto-coder failed (rc={proc.returncode}). Falling back to native LLM patcher. Error: {proc.stderr[-300:]}")
-            except Exception as e:
-                self.log(f"Failed to execute external auto-coder: {e}")
 
         # 1. Parse traceback to find affected files with line numbers
         code_dir_str = str(code_dir.resolve()).replace("\\", "/")
@@ -327,8 +291,18 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
                 error_msg = line
                 break
 
-        # 3. Gather context: config files, requirements, imports
+        # 3. Gather context: config files, requirements, workspace structure
         context_files: list[str] = []
+        
+        # Read EXP_WORKSPACE.md to give the autofix LLM a holistic view of the project
+        exp_workspace_md = code_dir / "EXP_WORKSPACE.md"
+        if exp_workspace_md.exists():
+            try:
+                ctx = exp_workspace_md.read_text(encoding="utf-8", errors="replace")
+                context_files.append(f"--- EXP_WORKSPACE.md ---\n{ctx}")
+            except OSError:
+                pass
+
         for pattern in ("config/*.yaml", "config/*.yml", "config/*.json",
                         "*.yaml", "*.yml", "requirements.txt"):
             for cf in code_dir.glob(pattern):

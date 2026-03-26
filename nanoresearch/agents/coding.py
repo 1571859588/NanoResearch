@@ -206,6 +206,26 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
         (code_dir / "environment.yml").write_text(environment_yaml, encoding="utf-8")
         generated_files.append("environment.yml")
 
+        # Step 6: Generate EXP_WORKSPACE.md for ExecutionAgent Autofix
+        workspace_md_path = code_dir / "EXP_WORKSPACE.md"
+        workspace_content = [f"# Experiment Workspace: {code_plan.get('project_name', 'Research Project')}\n"]
+        workspace_content.append(f"**Description**: {code_plan.get('description', '')}\n")
+        workspace_content.append("## Architecture Details\n")
+        workspace_content.append(f"- **Architecture Option**: {code_plan.get('architecture_option', '')}")
+        workspace_content.append(f"- **Entry Point**: {original_train_command}\n")
+        workspace_content.append("## Files and Roles\n")
+        for f in code_plan.get("files", []):
+            if isinstance(f, dict) and f.get("path"):
+                workspace_content.append(f"### `{f['path']}`")
+                workspace_content.append(f"**Role**: {f.get('description', '')}")
+                if f.get("dependencies"):
+                    workspace_content.append(f"**Dependencies**: {', '.join(f['dependencies'])}")
+                workspace_content.append("")
+            
+        workspace_md_path.write_text("\n".join(workspace_content), encoding="utf-8")
+        generated_files.append("EXP_WORKSPACE.md")
+        self.log("Generated EXP_WORKSPACE.md for autonomous autofix context")
+
         result = {
             "code_plan": code_plan,
             "generated_files": generated_files,
