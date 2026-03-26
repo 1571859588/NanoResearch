@@ -236,15 +236,52 @@ def _cli_progress(stage: str, status: str, message: str) -> None:
 @app.command()
 def resume(
     workspace: Path = typer.Option(..., "--workspace", "-w", help="Path to workspace directory"),
+    start_stage: str = typer.Option(None, "--start-stage", "-s", help="Force resume from a specific stage (e.g., coding, experiment)"),
     config_path: Path = typer.Option(None, "--config", "-c"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Resume a pipeline from its last checkpoint."""
+    """Resume a pipeline from its last checkpoint or a forced stage."""
     _setup_logging(verbose)
 
     ws = _load_workspace_safe(workspace)
     manifest = ws.manifest
     config = _load_config_safe(config_path)
+
+    # If user explicitly wants to start from a specific stage
+    if start_stage:
+        target_stage_name = start_stage.strip().upper()
+        try:
+            target_stage = PipelineStage(target_stage_name)
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid start stage '{start_stage}'. Valid options: {[s.value for s in PipelineStage]}")
+            raise typer.Exit(1)
+
+        from nanoresearch.schemas.manifest import processing_stages_for_mode, StageRecord
+        ordered_stages = processing_stages_for_mode(manifest.pipeline_mode)
+
+        if target_stage not in ordered_stages and target_stage != PipelineStage.INIT:
+            console.print(f"[red]Error:[/red] Stage '{target_stage.value}' is not valid for pipeline mode '{manifest.pipeline_mode.value}'")
+            raise typer.Exit(1)
+
+        found_target = False
+        for s in ordered_stages:
+            stage_name = s.value
+            if s == target_stage:
+                found_target = True
+
+            if stage_name not in manifest.stages:
+                manifest.stages[stage_name] = StageRecord(stage=s)
+
+            if not found_target:
+                # Stages BEFORE target become completed
+                manifest.stages[stage_name].status = "completed"
+            else:
+                # Target and stages AFTER become pending
+                manifest.stages[stage_name].status = "pending"
+
+        manifest.current_stage = target_stage
+        ws.update_manifest(current_stage=manifest.current_stage, stages=manifest.stages)
+        console.print(f"  [green]Forced pipeline to resume from stage:[/green] [bold]{target_stage.value}[/bold]")
 
     console.print(Panel(
         f"[bold]Session:[/bold] {manifest.session_id}\n"
