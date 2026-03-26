@@ -253,6 +253,11 @@ class ModelDispatcher(_MultiModelHelpersMixin):
         loop = asyncio.get_running_loop()
         last_exc: Exception | None = None
         json_mode_enabled = json_mode  # Track if json_mode was originally enabled
+        prompt_len = len(system_prompt) + len(user_prompt)
+        logger.debug(
+            f"Sending LLM request to {config.model} (prompt length ~{prompt_len} chars)..."
+        )
+        
         for attempt in range(MAX_API_RETRIES + 1):
             t0 = time.monotonic()
             try:

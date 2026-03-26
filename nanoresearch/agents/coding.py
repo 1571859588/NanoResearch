@@ -384,17 +384,36 @@ Design a runnable project. Return JSON:
             "never let exceptions be silently caught with exit code 0."
         )
 
-        all_files = [f.get("path", "") for f in code_plan.get("files", [])]
+        # Minify the overall code plan to drastically save tokens (prevent context overflow)
+        # For the target file, we pass the full spec separately. For others, just path and brief summary.
+        minified_code_plan = {
+            "files": [
+                {
+                    "path": f.get("path"),
+                    "brief": str(f.get("description", ""))[:150] + ("..." if len(str(f.get("description", ""))) > 150 else "")
+                }
+                for f in code_plan.get("files", [])
+            ]
+        }
 
-        user_prompt = f"""Write the complete code for: {file_spec.get('path', '')}
-Description: {file_spec.get('description', '')}
+        user_prompt = f"""
+You are implementing the file `{file_spec['path']}`.
 
-Project structure: {json.dumps(all_files)}
-Method: {json.dumps(blueprint.get('proposed_method', {}), indent=2)[:1000]}
-Datasets: {json.dumps(blueprint.get('datasets', []), indent=2)[:500]}
-Metrics: {json.dumps(blueprint.get('metrics', []), indent=2)[:300]}
-Dependencies: {json.dumps(code_plan.get('dependencies', []))}
-Train command: {code_plan.get('train_command', 'python train.py')}
+### Overall Code Architecture (for context):
+```json
+{json.dumps(minified_code_plan, indent=2)}
+```
+
+### File Specification (YOUR TASK):
+{json.dumps(file_spec, indent=2)}
+
+### Experiment Topic:
+{topic}
+
+### Blueprint:
+```json
+{json.dumps(blueprint, indent=2)}
+```
 
 === ALREADY DOWNLOADED DATA & MODELS (use these exact paths) ===
 {resource_paths}
