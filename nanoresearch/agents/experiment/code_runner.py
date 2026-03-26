@@ -328,7 +328,8 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
         code_gen_config = self.config.for_stage("code_gen")
 
         for target_file, error_line in affected:
-            rel_path = str(target_file.relative_to(code_dir)).replace("\\", "/")
+            # target_file is absolute (from resolve()), so code_dir must be resolved too
+            rel_path = str(target_file.relative_to(code_dir.resolve())).replace("\\", "/")
             try:
                 content = target_file.read_text(encoding="utf-8", errors="replace")
             except OSError:
