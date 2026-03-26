@@ -278,6 +278,7 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
         prompt = (
             f"Please fix the following python execution crash. "
             f"You may read and edit any files necessary to fix the crash. "
+            f"If the error details below are incomplete, please check the 'logs' or 'results' directories for full application log files. "
             f"Important: Do not explain, just make the edits and exit.\n\n"
             f"Error details:\n"
             f"{stderr[-6000:]}\n\n"
@@ -305,9 +306,9 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
                 return ["auto-fixed-by-ccr"]
             else:
                 stderr_text = stderr_out.decode('utf-8', errors='replace')
-                self.log(f"Claude Code returned non-zero (return_code={proc.returncode}):\n{stderr_text}")
-                # Sometimes it makes changes but exits with non-zero.
                 stdout_text = stdout.decode('utf-8', errors='replace')
+                self.log(f"Claude Code returned non-zero (return_code={proc.returncode}):\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
+                # Sometimes it makes changes but exits with non-zero.
                 if "edited" in stdout_text.lower() or "saved" in stdout_text.lower():
                     self.log("Claude Code returned non-zero but possibly made edits. Continuing.")
                     return ["auto-fixed-by-ccr-partial"]

@@ -37,20 +37,22 @@ class _ManifestsMixin:
         """Choose the best available pip install strategy for a project."""
         requirements_path = code_dir / "requirements.txt"
         if requirements_path.exists():
+            abs_req = str(requirements_path.resolve())
             return DependencyInstallPlan(
                 source="requirements.txt",
-                args=["-r", str(requirements_path)],
-                manifest_path=str(requirements_path),
+                args=["-r", abs_req],
+                manifest_path=abs_req,
             )
 
         environment_file = cls._find_environment_file(code_dir)
         if environment_file is not None:
             pip_dependencies = cls._extract_pip_dependencies(environment_file)
             if pip_dependencies:
+                abs_env = str(environment_file.resolve())
                 return DependencyInstallPlan(
                     source=environment_file.name,
                     args=pip_dependencies,
-                    manifest_path=str(environment_file),
+                    manifest_path=abs_env,
                 )
 
         pyproject_file = code_dir / "pyproject.toml"
@@ -59,7 +61,7 @@ class _ManifestsMixin:
                 source="pyproject.toml",
                 args=["-e", "."],
                 fallback_args=["."],
-                manifest_path=str(pyproject_file),
+                manifest_path=str(pyproject_file.resolve()),
             )
 
         setup_py = code_dir / "setup.py"
@@ -68,7 +70,7 @@ class _ManifestsMixin:
                 source="setup.py",
                 args=["-e", "."],
                 fallback_args=["."],
-                manifest_path=str(setup_py),
+                manifest_path=str(setup_py.resolve()),
             )
 
         setup_cfg = code_dir / "setup.cfg"
@@ -77,7 +79,7 @@ class _ManifestsMixin:
                 source="setup.cfg",
                 args=["-e", "."],
                 fallback_args=["."],
-                manifest_path=str(setup_cfg),
+                manifest_path=str(setup_cfg.resolve()),
             )
 
         return None

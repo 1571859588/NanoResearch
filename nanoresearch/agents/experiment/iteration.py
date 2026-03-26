@@ -241,8 +241,8 @@ Output a JSON object with:
                 modified_files = ["auto-fixed-iterative-ccr"]
             else:
                 stderr_text = stderr_out.decode('utf-8', errors='replace')
-                self.log(f"Claude Code returned non-zero (return_code={proc.returncode}):\n{stderr_text}")
                 stdout_text = stdout.decode('utf-8', errors='replace')
+                self.log(f"Claude Code returned non-zero (return_code={proc.returncode}):\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
                 if "edited" in stdout_text.lower() or "saved" in stdout_text.lower():
                     self.log("Claude Code returned non-zero but possibly made edits. Continuing.")
                     modified_files = ["auto-fixed-iterative-ccr-partial"]
