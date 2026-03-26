@@ -297,7 +297,10 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
         
         prompt = (
             f"Fix the python execution crash in: {files_to_check}. "
-            f"Important: Do not read logs or massive files, just focus on the code. Do not explain, just make the edits and exit.\n\n"
+            f"Important: Do not read '__pycache__', 'logs', 'datasets', or binary files.\n"
+            f"Hint 1: You may read EXP_WORKSPACE.md for project context.\n"
+            f"Hint 2: If the error is an ImportError/ModuleNotFoundError (e.g., 'No module named clip'), you MUST edit requirements.txt to add the missing package.\n"
+            f"Do not explain, just make the edits and exit.\n\n"
             f"Error details:\n"
             f"{stderr[-2000:]}\n"
             f"{extra_context_text}"
@@ -331,17 +334,36 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
                 stderr=asyncio.subprocess.PIPE
             )
             
-            # Since Claude Code might take a while, wait up to 10 minutes
-            stdout, stderr_out = await asyncio.wait_for(proc.communicate(), timeout=600)
+            stdout_lines = []
+            stderr_lines = []
             
-            stdout_text = stdout.decode('utf-8', errors='replace')
-            stderr_text = stderr_out.decode('utf-8', errors='replace')
+            async def read_stream(stream, lines_list, prefix):
+                while True:
+                    line = await stream.readline()
+                    if not line:
+                        break
+                    text = line.decode('utf-8', errors='replace')
+                    lines_list.append(text)
+                    self.log(f"{prefix} {text.rstrip()}")
+            
+            # Since Claude Code might take a while, wait up to 10 minutes, streaming dynamically
+            await asyncio.wait_for(
+                asyncio.gather(
+                    read_stream(proc.stdout, stdout_lines, "[ccr]"),
+                    read_stream(proc.stderr, stderr_lines, "[ccr ERR]")
+                ),
+                timeout=600
+            )
+            await proc.wait()
+            
+            stdout_text = "".join(stdout_lines)
+            stderr_text = "".join(stderr_lines)
             
             if proc.returncode == 0:
-                self.log(f"Claude Code auto-fix completed successfully.\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
+                self.log(f"Claude Code auto-fix completed successfully.")
                 return ["auto-fixed-by-ccr"]
             else:
-                self.log(f"Claude Code returned non-zero (return_code={proc.returncode}):\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
+                self.log(f"Claude Code returned non-zero (return_code={proc.returncode}).")
                 # Sometimes it makes changes but exits with non-zero.
                 if "edited" in stdout_text.lower() or "saved" in stdout_text.lower():
                     self.log("Claude Code returned non-zero but possibly made edits. Continuing.")

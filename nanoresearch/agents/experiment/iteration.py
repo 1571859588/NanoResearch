@@ -245,16 +245,36 @@ Output a JSON object with:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, stderr_out = await asyncio.wait_for(proc.communicate(), timeout=600)
             
-            stdout_text = stdout.decode('utf-8', errors='replace')
-            stderr_text = stderr_out.decode('utf-8', errors='replace')
+            stdout_lines = []
+            stderr_lines = []
+            
+            async def read_stream(stream, lines_list, prefix):
+                while True:
+                    line = await stream.readline()
+                    if not line:
+                        break
+                    text = line.decode('utf-8', errors='replace')
+                    lines_list.append(text)
+                    self.log(f"{prefix} {text.rstrip()}")
+            
+            await asyncio.wait_for(
+                asyncio.gather(
+                    read_stream(proc.stdout, stdout_lines, "[ccr]"),
+                    read_stream(proc.stderr, stderr_lines, "[ccr ERR]")
+                ),
+                timeout=600
+            )
+            await proc.wait()
+            
+            stdout_text = "".join(stdout_lines)
+            stderr_text = "".join(stderr_lines)
             
             if proc.returncode == 0:
-                self.log(f"Claude Code iteration completed successfully.\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
+                self.log(f"Claude Code iteration completed successfully.")
                 modified_files = ["auto-fixed-iterative-ccr"]
             else:
-                self.log(f"Claude Code returned non-zero (return_code={proc.returncode}):\nSTDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}")
+                self.log(f"Claude Code returned non-zero (return_code={proc.returncode}).")
                 if "edited" in stdout_text.lower() or "saved" in stdout_text.lower():
                     self.log("Claude Code returned non-zero but possibly made edits. Continuing.")
                     modified_files = ["auto-fixed-iterative-ccr-partial"]
