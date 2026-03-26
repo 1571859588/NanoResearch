@@ -300,6 +300,7 @@ class _CodeRunnerMixin(_CodeRunnerHelpersMixin):
             f"Important: Do not read '__pycache__', 'logs', 'datasets', or binary files.\n"
             f"Hint 1: You may read EXP_WORKSPACE.md for project context.\n"
             f"Hint 2: If the error is an ImportError/ModuleNotFoundError (e.g., 'No module named clip'), you MUST edit requirements.txt to add the missing package.\n"
+            f"Hint 3: If you are editing train.py or model.py, forcefully ensure that 'cuda' is used as the device (e.g., device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')). Never hardcode 'cpu'.\n"
             f"Do not explain, just make the edits and exit.\n\n"
             f"Error details:\n"
             f"{stderr[-2000:]}\n"

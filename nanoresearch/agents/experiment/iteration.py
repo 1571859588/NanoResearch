@@ -210,11 +210,20 @@ Output a JSON object with:
 
         self._remember_mutation_snapshot_entry(None)
         
+        # NOTE: The original code had `json.dumps(hypothesis.planned_changes, indent=2)`
+        # The instruction's prompt uses `changes_list` which is not defined here.
+        # Assuming `changes_list` should be `json.dumps(hypothesis.planned_changes, indent=2)`
+        # and `hypothesis.hypothesis` is available.
+        changes_list_str = json.dumps(hypothesis.planned_changes, indent=2)
+
         prompt = (
-            f"Apply the following improvement to the project.\n\n"
-            f"== Planned Changes ==\n"
-            f"{json.dumps(hypothesis.planned_changes, indent=2)}\n\n"
-            f"Important: Only edit the files necessary. Do not explain, just edit and exit."
+            f"Apply the following architectural or algorithmic changes to the code in {code_dir}:\n\n"
+            f"Hypothesis to apply:\n{hypothesis.hypothesis}\n\n"
+            f"Planned specific changes:\n{changes_list_str}\n\n"
+            f"Important: Do not read logs, '__pycache__', 'datasets', or binary files.\n"
+            f"Hint 1: You may read EXP_WORKSPACE.md for project context if needed.\n"
+            f"Hint 2: When editing train.py or model.py, forcefully ensure that 'cuda' is used as the device (e.g., device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')). Never hardcode 'cpu'.\n"
+            f"Do not explain, just make the code edits to implement the hypothesis and exit."
         )
         
         escaped_prompt = shlex.quote(prompt)

@@ -28,7 +28,7 @@ class _LocalRunnerDryRunMixin:
         round_number: int | None = None,
     ) -> dict[str, Any]:
         """Run dry-run with iterative batch-fix cycles."""
-        max_total_cycles = 15
+        max_total_cycles = 1500
         max_repeated_errors = 3
         last_result: dict[str, Any] = {}
         fix_history: list[dict[str, Any]] = []
