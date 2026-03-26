@@ -154,6 +154,11 @@ class ResearchConfig(BaseModel):
     # Takes priority over environment_backend auto-detection.
     experiment_conda_env: str = ""  # e.g., "shixun"
 
+    # Direct/Shared conda env. If this is specified AND the environment exists,
+    # it bypasses all cloning/isolation steps and runs directly in it, saving time.
+    # If the environment does not exist, it falls back to the default isolation/clone logic.
+    experiment_direct_conda_env: str = ""
+
     # Clone an existing conda environment as base.
     # When set, creates a new env by cloning from the specified source env.
     # This is useful for copying pre-configured GPU/CUDA environments.

@@ -337,6 +337,33 @@ class RuntimeEnvironmentManager(
         environment_file = self._find_environment_file(code_dir)
         execution_policy = self.build_execution_policy(code_dir)
 
+        # ----- Priority 0: Explicit Direct Shared Environment from config ----------
+        # If the user specifically wants to bypass isolation and reuse an existing
+        # pre-built environment (saving time on cloning), check this first.
+        direct_env = getattr(self.config, "experiment_direct_conda_env", "").strip()
+        if direct_env and not force_isolated:
+            conda_python = self.find_conda_python(direct_env)
+            if conda_python:
+                self._log(f"Using shared/direct conda env '{direct_env}' directly: {conda_python} (Bypassing cloning)")
+                install_info = await self.install_requirements(conda_python, code_dir)
+                runtime_validation = await self.validate_runtime(
+                    conda_python,
+                    code_dir,
+                    execution_policy=execution_policy,
+                )
+                return {
+                    "kind": "conda",
+                    "python": conda_python,
+                    "env_name": direct_env,
+                    "requirements_path": str(requirements_path) if requirements_path.exists() else "",
+                    "environment_file": str(environment_file) if environment_file else "",
+                    "dependency_install": install_info,
+                    "runtime_validation": runtime_validation,
+                    "runtime_validation_repair": {"status": "skipped", "actions": []},
+                    "execution_policy": execution_policy.to_dict(),
+                }
+            self._log(f"Direct conda env '{direct_env}' does not exist. Falling back to isolation/cloning routine.")
+
         # ----- Priority 0: user-managed environment (experiment_python) ---
         user_spec = (self.config.experiment_python or "").strip()
         if user_spec and not force_isolated:
