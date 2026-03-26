@@ -260,7 +260,9 @@ def resume(
         ordered_stages = processing_stages_for_mode(manifest.pipeline_mode)
 
         if target_stage not in ordered_stages and target_stage != PipelineStage.INIT:
-            console.print(f"[red]Error:[/red] Stage '{target_stage.value}' is not valid for pipeline mode '{manifest.pipeline_mode.value}'")
+            valid_list = [PipelineStage.INIT.value] + [s.value for s in ordered_stages]
+            console.print(f"[red]Error:[/red] Stage '{target_stage.value}' is not valid for pipeline mode '{manifest.pipeline_mode.value}'.")
+            console.print(f"Available stages for '{manifest.pipeline_mode.value}' mode: [bold cyan]{', '.join(valid_list)}[/bold cyan]")
             raise typer.Exit(1)
 
         found_target = False
