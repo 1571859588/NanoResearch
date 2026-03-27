@@ -267,12 +267,18 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
             "2. Use PyTorch and standard ML libraries\n"
             "3. Include proper training loop, evaluation, checkpointing\n"
             "4. Log metrics to a results file (JSON or CSV)\n"
-            "5. HARD REQUIREMENT (PHYSICAL ISOLATION & BATCH EXECUTION): All baseline models, their specific training loops, and execution scripts MUST be placed in a dedicated `baselines/` subdirectory. "
-            "Because different baselines have vastly different architectures and setups, you must create a `baselines/run_all.sh` executable bash script that sequentially calls the entry point for EACH required baseline (e.g. `python baselines/run_clip_cbm.py && python baselines/run_clip_vg.py`). "
-            "DO NOT mix baseline execution logic into the proposed method's `train.py`. "
-            "When logging results in either script, ensure you mark `is_proposed=True` for our new method, and `is_proposed=False` for baselines. "
-            "ALL metrics MUST be logged to `results/metrics.json` (relative to the project root directory, natively parsing JSON arrays). "
-            "IMPORTANT: Your `baseline_train_command` MUST invoke `bash baselines/run_all.sh`.\n"
+            "5. HARD REQUIREMENT (PER-BASELINE DIRECTORY ISOLATION): Each baseline method MUST have its own separate subdirectory under `baselines/<slug>/` "
+            "(where <slug> is the baseline's snake_case identifier from the blueprint, e.g. `baselines/label_free_cbm/`). "
+            "Each baseline subdirectory MUST contain:\n"
+            "   - `train.py` (self-contained entry point for that baseline)\n"
+            "   - `model.py` (baseline's model architecture)\n"
+            "   - Any other files needed for that specific baseline\n"
+            "The baseline scripts may import shared utilities from the root directory (e.g. `sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))` then `from dataset import ...`).\n"
+            "You MUST also create `baselines/run_all.sh` that sequentially executes each baseline's train.py. "
+            "DO NOT mix baseline logic into the proposed method's `train.py`. "
+            "When logging results, baselines mark `is_proposed=False` and our method marks `is_proposed=True`. "
+            "Each baseline MUST log its metrics to BOTH `baselines/<slug>/results/metrics.json` (its own local copy) AND append to the root `results/metrics.json`. "
+            "IMPORTANT: Your `baseline_train_command` MUST be `bash baselines/run_all.sh`.\n"
             "6. Support command-line arguments for hyperparameters\n"
             "7. If a dataset is listed as AVAILABLE below, use its exact path\n"
             "8. All runtime downloads MUST go to the Data directory path below (use as root/cache_dir)\n"
@@ -291,7 +297,7 @@ Experiment Blueprint:
 - Method: {json.dumps(blueprint.get('proposed_method', {}), indent=2)[:1500]}
 - Datasets: {json.dumps(blueprint.get('datasets', []), indent=2)[:500]}
 - Metrics: {json.dumps(blueprint.get('metrics', []), indent=2)[:300]}
-- Baselines: {json.dumps(blueprint.get('baselines', []), indent=2)[:500]}
+- Baselines: {json.dumps(blueprint.get('baselines', []), indent=2)[:800]}
 
 === ALREADY DOWNLOADED DATA & MODELS (use these exact paths) ===
 {resource_paths}
@@ -328,16 +334,16 @@ Design a runnable project. Return JSON:
   "files": [
     {{
       "path": "train.py",
-      "description": "Main training script with argparse, training loop, evaluation, and support for --dry-run / --quick-eval",
+      "description": "Main training script for PROPOSED METHOD ONLY, with argparse, training loop, evaluation, and support for --dry-run / --quick-eval",
       "is_entrypoint": true
     }},
     {{
       "path": "model.py",
-      "description": "Model architecture definition"
+      "description": "Proposed method model architecture definition"
     }},
     {{
       "path": "dataset.py",
-      "description": "Dataset loading and preprocessing"
+      "description": "Shared dataset loading and preprocessing (importable by baselines)"
     }},
     {{
       "path": "evaluate.py",
@@ -349,12 +355,24 @@ Design a runnable project. Return JSON:
     }},
     {{
       "path": "baselines/run_all.sh",
-      "description": "Bash script that executes all baseline training/eval sequentially",
+      "description": "Bash script that cd's into each baseline dir and runs its train.py sequentially",
       "is_entrypoint": true
     }},
     {{
-      "path": "baselines/clip_cbm_baseline.py",
-      "description": "Specific implementation for one baseline"
+      "path": "baselines/label_free_cbm/train.py",
+      "description": "Self-contained training script for the Label-Free CBM baseline"
+    }},
+    {{
+      "path": "baselines/label_free_cbm/model.py",
+      "description": "Label-Free CBM model architecture"
+    }},
+    {{
+      "path": "baselines/post_hoc_cbm/train.py",
+      "description": "Self-contained training script for the Post-hoc CBM baseline"
+    }},
+    {{
+      "path": "baselines/post_hoc_cbm/model.py",
+      "description": "Post-hoc CBM model architecture"
     }}
   ],
   "baseline_train_command": "bash baselines/run_all.sh",

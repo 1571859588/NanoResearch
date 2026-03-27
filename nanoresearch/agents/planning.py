@@ -25,6 +25,15 @@ CRITICAL RULES — evidence grounding:
 - Every baseline number MUST have a "performance_provenance" entry citing which paper it came from.
 - Mark proposed-method values as projected: set "is_projected" to true for each metric.
 
+CRITICAL RULES — baseline selection:
+- Baselines MUST be well-known, widely-cited PUBLISHED methods from the literature, NOT your own inventions.
+- Each baseline MUST have a real, citable paper (e.g. "Post-hoc CBM (Yuksekgonul et al., 2023)").
+- Each baseline MUST include a "github_repo" field with the URL to the original implementation (if available, otherwise "N/A").
+- Each baseline MUST include a "slug" field: a short lowercase snake_case identifier (e.g. "label_free_cbm", "post_hoc_cbm").
+- DO NOT invent methods like "CLIP-CBM" or "CLIP-VG" that have no real published paper behind them.
+- BAD examples: "CLIP-CBM", "Standard CBM", "Basic CLIP Pipeline" — these are not real published methods.
+- GOOD examples: "Label-Free CBM (Oikarinen et al., 2023)", "Post-hoc CBM (Yuksekgonul et al., 2023)", "CW-CBM (Yen et al., 2024)".
+
 Design experiments that are:
 - Reproducible with standard ML frameworks
 - Include proper baselines for comparison (using REAL published numbers)
@@ -107,7 +116,8 @@ Design a comprehensive experiment blueprint as JSON with:
    IMPORTANT: If a LOCAL dataset is available (listed above), use its EXACT name as the "name" field.
    For example, if the local dataset is named "CUB_200_2011", use "CUB_200_2011" as the name, NOT "CUB-200".
 4. "baselines": Array of baseline methods, each with:
-   - "name", "description", "reference_paper_id"
+   - "name" (full published name, e.g. "Label-Free CBM"), "slug" (short snake_case id, e.g. "label_free_cbm"), "description", "reference_paper_id"
+   - "github_repo": URL to the original implementation (or "N/A" if not available)
    - "expected_performance": dict of metric→value (use ONLY values from the evidence above, or "N/A")
    - "performance_provenance": dict of metric→source (e.g. "Abstract of arxiv:2401.00001")
    - "is_projected": dict of metric→bool (true only for proposed method projections)

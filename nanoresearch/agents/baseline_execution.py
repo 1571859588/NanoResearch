@@ -3,7 +3,7 @@
 This agent intercepts the ExecutionAgent lifecycle to:
 1. Swap the runner command to `baseline_train_command`
 2. Clear stale iteration checkpoints so the loop runs fresh
-3. Preserve baseline metrics to `baseline_metrics.json`
+3. Scan per-baseline subdirectories for metrics and merge them into `baseline_metrics.json`
 """
 
 import json
@@ -41,8 +41,6 @@ class BaselineExecutionAgent(ExecutionAgent):
         self.log(f"Intercepting execution loop to run baseline validation: {baseline_cmd}")
 
         # --- Step 1: Clear stale iteration checkpoints ---
-        # The iteration loop resumes from checkpoints. Since BASELINE_EXECUTION
-        # is a distinct stage, we must NOT resume from stale EXECUTION checkpoints.
         checkpoint_path = self.workspace.path / _LOCAL_CHECKPOINT
         if checkpoint_path.exists():
             self.log("Clearing stale iteration checkpoint to ensure fresh baseline execution")
@@ -52,7 +50,6 @@ class BaselineExecutionAgent(ExecutionAgent):
         runner_assets = ensure_project_runner(code_dir, baseline_cmd)
 
         # --- Step 3: Forcefully overwrite ALL command references ---
-        # This prevents the parent class from re-overwriting with the proposed method.
         coding_output["train_command"] = runner_assets["runner_command"]
         coding_output["entry_train_command"] = baseline_cmd
         coding_output["baseline_train_command"] = baseline_cmd
@@ -65,16 +62,59 @@ class BaselineExecutionAgent(ExecutionAgent):
         # --- Step 4: Execute via the parent class ---
         result = await super().run(**inputs)
 
-        # --- Step 5: Clone baseline metrics to prevent overwrite by proposed method ---
-        metrics_file = code_dir / "results" / "metrics.json"
-        baseline_metrics_file = code_dir / "results" / "baseline_metrics.json"
-        if metrics_file.exists():
-            shutil.copy2(str(metrics_file), str(baseline_metrics_file))
-            self.log(f"Cloned baseline metrics output to {baseline_metrics_file.name} to preserve analysis isolation")
+        # --- Step 5: Collect per-baseline metrics and merge ---
+        baseline_metrics = self._collect_per_baseline_metrics(code_dir)
 
-        # --- Step 6: Clear checkpoint again so EXECUTION stage starts fresh ---
+        # Also copy the root metrics.json as a fallback
+        root_metrics_file = code_dir / "results" / "metrics.json"
+        baseline_metrics_file = code_dir / "results" / "baseline_metrics.json"
+
+        if baseline_metrics:
+            # Write the merged per-baseline metrics
+            baseline_metrics_file.parent.mkdir(parents=True, exist_ok=True)
+            baseline_metrics_file.write_text(
+                json.dumps(baseline_metrics, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self.log(
+                f"Merged metrics from {len(baseline_metrics)} baseline subdirectories "
+                f"into {baseline_metrics_file.name}"
+            )
+        elif root_metrics_file.exists():
+            shutil.copy2(str(root_metrics_file), str(baseline_metrics_file))
+            self.log(f"Cloned root metrics to {baseline_metrics_file.name} (no per-baseline dirs found)")
+
+        # --- Step 6: Clear checkpoint for EXECUTION stage ---
         if checkpoint_path.exists():
-            self.log("Clearing iteration checkpoint after baseline completion for clean proposed method execution")
+            self.log("Clearing iteration checkpoint after baseline completion")
             checkpoint_path.unlink()
 
         return result
+
+    @staticmethod
+    def _collect_per_baseline_metrics(code_dir: Path) -> list[dict]:
+        """Scan baselines/<slug>/results/metrics.json for each baseline."""
+        baselines_dir = code_dir / "baselines"
+        if not baselines_dir.exists():
+            return []
+
+        all_metrics = []
+        for slug_dir in sorted(baselines_dir.iterdir()):
+            if not slug_dir.is_dir():
+                continue
+            metrics_file = slug_dir / "results" / "metrics.json"
+            if metrics_file.exists():
+                try:
+                    data = json.loads(metrics_file.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        for entry in data:
+                            entry["baseline_slug"] = slug_dir.name
+                        all_metrics.extend(data)
+                    elif isinstance(data, dict):
+                        data["baseline_slug"] = slug_dir.name
+                        all_metrics.append(data)
+                    logger.info("Collected metrics from baseline %s", slug_dir.name)
+                except (json.JSONDecodeError, OSError) as exc:
+                    logger.warning("Failed to read metrics from %s: %s", metrics_file, exc)
+
+        return all_metrics
