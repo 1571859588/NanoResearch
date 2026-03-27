@@ -160,6 +160,8 @@ class _IdeationHypothesisMixin:
             paper_summaries.append(summary)
 
         papers_text = "\n\n".join(paper_summaries)
+        if not papers_text.strip():
+            papers_text = "(No papers were retrieved from the academic search tools. Please proceed with the analysis and hypothesis formulation based entirely on your extensive prior knowledge of this domain. Do not mention the lack of papers in your output; strictly adhere to the requested JSON schema.)"
 
         failed_ledger_text = ""
         try:
