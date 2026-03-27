@@ -224,6 +224,137 @@ class BaseOrchestrator(ABC):
                             f"Blueprint validation: {len(issues)} issue(s) found",
                         )
 
+                # === QUALITY GATE 1: Post-CODING Scientific Code Review ===
+                if stage == PipelineStage.CODING:
+                    coding_out = results.get("coding_output", {})
+                    code_dir_str = coding_out.get("code_dir", "")
+                    if code_dir_str:
+                        from pathlib import Path as _Path
+                        from nanoresearch.pipeline.quality_gates import (
+                            validate_post_coding,
+                            format_gate_failure_message,
+                        )
+                        gate_passed, gate_issues = validate_post_coding(
+                            _Path(code_dir_str),
+                            results.get("experiment_blueprint", {}),
+                            results.get("setup_output", {}),
+                        )
+                        if not gate_passed:
+                            self.progress_emitter.substep(
+                                stage.value,
+                                f"Quality Gate 1 FAILED: {len(gate_issues)} issue(s)",
+                            )
+                            raise RuntimeError(
+                                format_gate_failure_message(
+                                    "Post-CODING Scientific Code Review",
+                                    gate_issues,
+                                    "Re-generate the code with correct dataset paths, "
+                                    "reasonable hyperparameters, and complete baselines.",
+                                )
+                            )
+                        logger.info("Quality Gate 1 (post-CODING) PASSED")
+
+                # === QUALITY GATE 2: Post-EXECUTION Result Sanity Check ===
+                if stage == PipelineStage.EXECUTION:
+                    exec_out = results.get("execution_output", {})
+                    if exec_out:
+                        from pathlib import Path as _Path
+                        from nanoresearch.pipeline.quality_gates import (
+                            validate_post_execution,
+                            format_gate_failure_message,
+                        )
+                        exec_code_dir = _Path(exec_out.get("code_dir", ""))
+                        gate_passed, gate_issues = validate_post_execution(
+                            exec_out,
+                            results.get("experiment_blueprint", {}),
+                            code_dir=exec_code_dir if exec_code_dir.exists() else None,
+                        )
+                        if not gate_passed:
+                            self.progress_emitter.substep(
+                                stage.value,
+                                f"Quality Gate 2 FAILED: {len(gate_issues)} issue(s)",
+                            )
+                            # Gate 2 failure is a warning, not a hard stop,
+                            # because the execution did complete — the analysis
+                            # stage should interpret broken results correctly.
+                            for gi in gate_issues:
+                                logger.warning("Gate 2 issue: %s", gi)
+                            exec_out["quality_gate_issues"] = gate_issues
+                            exec_out["quality_gate_passed"] = False
+                        else:
+                            logger.info("Quality Gate 2 (post-EXECUTION) PASSED")
+                            exec_out["quality_gate_passed"] = True
+
+                # === QUALITY GATE 3: Post-ANALYSIS Scientific Review ===
+                if stage == PipelineStage.ANALYSIS:
+                    analysis_out = results.get("analysis_output", {})
+                    exec_out = results.get("execution_output", {})
+                    if analysis_out:
+                        from nanoresearch.pipeline.quality_gates import (
+                            validate_post_analysis,
+                            format_gate_failure_message,
+                        )
+                        gate_passed, gate_issues = validate_post_analysis(
+                            analysis_out,
+                            results.get("experiment_blueprint", {}),
+                            exec_out or {},
+                        )
+                        if not gate_passed:
+                            self.progress_emitter.substep(
+                                stage.value,
+                                f"Quality Gate 3 FAILED: {len(gate_issues)} issue(s)",
+                            )
+                            logger.warning(
+                                "Quality Gate 3 (post-ANALYSIS) FAILED — "
+                                "looping back to CODING to fix %d identified issues.",
+                                len(gate_issues),
+                            )
+
+                            # Save gate issues as context for the next CODING run
+                            self.workspace.write_json(
+                                "plans/quality_gate3_issues.json",
+                                {
+                                    "gate": "post-ANALYSIS",
+                                    "issues": gate_issues,
+                                    "remediation": (
+                                        "Re-generate code to fix identified issues: "
+                                        "correct dataset paths, ensure sufficient "
+                                        "training epochs, fix baseline execution, "
+                                        "and produce scientifically plausible results."
+                                    ),
+                                },
+                            )
+
+                            # Reset state machine to CODING
+                            self.state_machine.force_set(PipelineStage.CODING)
+                            self.workspace.update_manifest(
+                                current_stage=PipelineStage.CODING,
+                            )
+
+                            # Erase completion status from CODING onwards
+                            manifest = self.workspace.manifest
+                            reset_stages = [
+                                PipelineStage.CODING,
+                                PipelineStage.BASELINE_EXECUTION,
+                                PipelineStage.EXECUTION,
+                                PipelineStage.ANALYSIS,
+                                PipelineStage.FIGURE_GEN,
+                                PipelineStage.WRITING,
+                                PipelineStage.REVIEW,
+                            ]
+                            for s in reset_stages:
+                                if s.value in manifest.stages:
+                                    del manifest.stages[s.value]
+                            self.workspace._write_manifest(manifest)
+
+                            logger.info(
+                                "Pipeline state reset to CODING. "
+                                "Restarting pipeline loop."
+                            )
+                            return await self.run(topic)
+
+                        logger.info("Quality Gate 3 (post-ANALYSIS) PASSED")
+
                 self._report_progress(
                     stage.value, "completed",
                     f"[{stage_idx+1}/{len(stages)}] {stage.value} completed",

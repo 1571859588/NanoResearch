@@ -138,6 +138,17 @@ class DeepPipelineOrchestrator(BaseOrchestrator):
             inputs["topic"] = topic
             inputs["experiment_blueprint"] = accumulated.get("experiment_blueprint", {})
             inputs["setup_output"] = accumulated.get("setup_output", {})
+            # Inject quality gate feedback from prior failed loop-back
+            try:
+                gate_feedback = self.workspace.read_json("plans/quality_gate3_issues.json")
+                if gate_feedback:
+                    inputs["quality_gate_feedback"] = gate_feedback
+                    logger.info(
+                        "Injecting Gate 3 feedback into CODING: %d issues",
+                        len(gate_feedback.get("issues", [])),
+                    )
+            except (FileNotFoundError, Exception):
+                pass
 
         elif stage == PipelineStage.BASELINE_EXECUTION:
             inputs["topic"] = topic

@@ -116,15 +116,27 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
         topic: str = inputs["topic"]
         experiment_blueprint: dict = inputs.get("experiment_blueprint", {})
         setup_output: dict = inputs.get("setup_output", {})
+        quality_gate_feedback: dict = inputs.get("quality_gate_feedback", {})
 
         self.log("Starting coding: generating runnable experiment")
+
+        # If looping back from a quality gate failure, log the issues
+        if quality_gate_feedback:
+            gate_issues = quality_gate_feedback.get("issues", [])
+            self.log(
+                f"QUALITY GATE LOOP-BACK: {len(gate_issues)} issue(s) from "
+                f"gate '{quality_gate_feedback.get('gate', 'unknown')}' must be fixed"
+            )
+            for i, issue in enumerate(gate_issues, 1):
+                self.log(f"  Issue {i}: {issue}")
 
         code_dir = self.workspace.path / "experiment"
         code_dir.mkdir(exist_ok=True)
 
         # Step 1: Design the experiment code plan
         code_plan = await self._design_code_plan(
-            topic, experiment_blueprint, setup_output
+            topic, experiment_blueprint, setup_output,
+            quality_gate_feedback=quality_gate_feedback,
         )
         self.log(f"Code plan: {len(code_plan.get('files', []))} files")
 
@@ -265,7 +277,8 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
         return result
 
     async def _design_code_plan(
-        self, topic: str, blueprint: dict, setup: dict
+        self, topic: str, blueprint: dict, setup: dict,
+        quality_gate_feedback: dict | None = None,
     ) -> dict:
         """Design the code structure based on blueprint and cloned repos."""
         code_analysis = setup.get("code_analysis", {})
@@ -276,6 +289,21 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
 
         # Build resource paths info for the LLM
         resource_paths = self._format_resource_paths(downloaded_resources, data_dir, models_dir)
+
+        # Build quality gate remediation section if looping back
+        gate_feedback_section = ""
+        if quality_gate_feedback and quality_gate_feedback.get("issues"):
+            gate_issues = quality_gate_feedback["issues"]
+            gate_feedback_section = (
+                "\n\n### ⚠️ CRITICAL: QUALITY GATE FAILURE — MUST FIX ###\n"
+                "The previous version of the generated code FAILED the scientific quality review. "
+                "You MUST address ALL of the following issues in the new code:\n"
+            )
+            for i, issue in enumerate(gate_issues, 1):
+                gate_feedback_section += f"  {i}. {issue}\n"
+            gate_feedback_section += (
+                "\nDo NOT repeat the same mistakes. Each issue above MUST be resolved.\n"
+            )
 
         system_prompt = (
             "You are a senior ML research engineer designing a runnable experiment project. "
@@ -397,6 +425,10 @@ Design a runnable project. Return JSON:
   "train_command": "python train.py --config config.py --method [proposed_name]",
   "expected_output_files": ["results/metrics.json", "results/training_log.csv", "checkpoints/best_model.pt"]
 }}"""
+
+        # Append quality gate remediation if present
+        if gate_feedback_section:
+            user_prompt += gate_feedback_section
 
         try:
             result = await self.generate_json(system_prompt, user_prompt)
