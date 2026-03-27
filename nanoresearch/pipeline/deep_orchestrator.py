@@ -9,7 +9,8 @@ from typing import Any
 from nanoresearch.agents.analysis import AnalysisAgent
 from nanoresearch.agents.base import BaseResearchAgent
 from nanoresearch.agents.coding import CodingAgent
-from nanoresearch.agents.execution import ExecutionAgent
+from nanoresearch.agents.execution.execution_agent import ExecutionAgent
+from nanoresearch.agents.baseline_execution import BaselineExecutionAgent
 from nanoresearch.agents.figure_gen import FigureAgent
 from nanoresearch.agents.ideation import IdeationAgent
 from nanoresearch.agents.planning import PlanningAgent
@@ -31,6 +32,7 @@ class DeepPipelineOrchestrator(BaseOrchestrator):
         PipelineStage.PLANNING: "experiment_blueprint",
         PipelineStage.SETUP: "setup_output",
         PipelineStage.CODING: "coding_output",
+        PipelineStage.BASELINE_EXECUTION: "baseline_execution_output",
         PipelineStage.EXECUTION: "execution_output",
         PipelineStage.ANALYSIS: "analysis_output",
         PipelineStage.FIGURE_GEN: "figure_gen_output",
@@ -43,6 +45,7 @@ class DeepPipelineOrchestrator(BaseOrchestrator):
         PipelineStage.PLANNING: "plans/experiment_blueprint.json",
         PipelineStage.SETUP: "plans/setup_output.json",
         PipelineStage.CODING: "plans/coding_output.json",
+        PipelineStage.BASELINE_EXECUTION: "plans/baseline_execution_output.json",
         PipelineStage.EXECUTION: "plans/execution_output.json",
         PipelineStage.ANALYSIS: "plans/analysis_output.json",
         PipelineStage.FIGURE_GEN: "drafts/figure_output.json",
@@ -58,6 +61,7 @@ class DeepPipelineOrchestrator(BaseOrchestrator):
             PipelineStage.PLANNING: PlanningAgent(self.workspace, self.config),
             PipelineStage.SETUP: SetupAgent(self.workspace, self.config),
             PipelineStage.CODING: CodingAgent(self.workspace, self.config),
+            PipelineStage.BASELINE_EXECUTION: BaselineExecutionAgent(self.workspace, self.config),
             PipelineStage.EXECUTION: ExecutionAgent(self.workspace, self.config),
             PipelineStage.ANALYSIS: AnalysisAgent(self.workspace, self.config),
             PipelineStage.FIGURE_GEN: FigureAgent(self.workspace, self.config),
@@ -134,6 +138,12 @@ class DeepPipelineOrchestrator(BaseOrchestrator):
             inputs["topic"] = topic
             inputs["experiment_blueprint"] = accumulated.get("experiment_blueprint", {})
             inputs["setup_output"] = accumulated.get("setup_output", {})
+
+        elif stage == PipelineStage.BASELINE_EXECUTION:
+            inputs["topic"] = topic
+            inputs["coding_output"] = accumulated.get("coding_output", {})
+            inputs["setup_output"] = accumulated.get("setup_output", {})
+            inputs["experiment_blueprint"] = accumulated.get("experiment_blueprint", {})
 
         elif stage == PipelineStage.EXECUTION:
             inputs["topic"] = topic
