@@ -161,12 +161,25 @@ class _IdeationHypothesisMixin:
 
         papers_text = "\n\n".join(paper_summaries)
 
+        failed_ledger_text = ""
+        try:
+            failed_ledger = self.workspace.read_json("plans/failed_experiments_ledger.json")
+            if failed_ledger and isinstance(failed_ledger, list):
+                failed_ledger_text = "\n\nCRITICAL CONTEXT - PREVIOUS FAILED EXPERIMENTS:\n"
+                failed_ledger_text += "The following architectures were already implemented but FAILED to beat the established baselines. DO NOT propose them again. You must analyze why they failed and propose structurally different ideas.\n"
+                for i, failed in enumerate(failed_ledger):
+                    bp = failed.get("blueprint", {})
+                    method_str = json.dumps(bp.get("proposed_method", {}), indent=2)
+                    failed_ledger_text += f"\n[Failed Attempt {i+1}]\nMethod: {method_str}\n"
+        except FileNotFoundError:
+            pass
+
         prompt = f"""Research Topic: "{topic}"
 
 I searched using these queries: {json.dumps(queries)}
 
 Here are the retrieved papers:
-{papers_text}
+{papers_text}{failed_ledger_text}
 
 Analyze these papers and produce a JSON object with:
 1. "survey_summary": A 300-500 word narrative summarizing the state of the field.

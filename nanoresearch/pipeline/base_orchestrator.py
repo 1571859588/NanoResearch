@@ -228,6 +228,56 @@ class BaseOrchestrator(ABC):
                     f"[{stage_idx+1}/{len(stages)}] {stage.value} completed in {duration:.1f}s",
                 )
 
+                # Cyclical Baseline-Driven Scientific Regression Check
+                if stage == PipelineStage.EXPERIMENT or stage == PipelineStage.EXECUTION:
+                    exp_out = results.get("experiment_output", {}) if stage == PipelineStage.EXPERIMENT else results.get("execution_output", {}) # Fallback if standard mode
+                    if exp_out.get("experiment_status") == "failed_to_beat_baseline":
+                        logger.warning("Pipeline hit a structural wall: The explored method failed to beat the baseline.")
+                        logger.warning("Triggering global pipeline regression back to IDEATION phase to formulate a new architecture.")
+
+                        import shutil
+                        import uuid
+                        archive_id = uuid.uuid4().hex[:6]
+                        archive_dir = self.workspace.path / f"experiment_failed_{archive_id}"
+                        code_dir = self.workspace.path / "code"
+                        if code_dir.exists():
+                            shutil.move(str(code_dir), str(archive_dir))
+                        logger.info(f"Failed experiment code archived to {archive_dir.name}")
+
+                        # Accumulate failed experiments to pass to IDEATION
+                        try:
+                            failed_list = self.workspace.read_json("plans/failed_experiments_ledger.json")
+                        except FileNotFoundError:
+                            failed_list = []
+                            
+                        failed_list.append({
+                            "archive": archive_dir.name,
+                            "blueprint": results.get("experiment_blueprint", {}),
+                            "metrics": exp_out.get("experiment_results", {})
+                        })
+                        self.workspace.write_json("plans/failed_experiments_ledger.json", failed_list)
+
+                        # Reset state machine to IDEATION
+                        self.state_machine.force_set(PipelineStage.IDEATION)
+                        self.workspace.update_manifest(current_stage=PipelineStage.IDEATION)
+
+                        # Erase completion status for all stages from IDEATION onwards
+                        manifest = self.workspace.manifest
+                        reset_stages = [
+                            PipelineStage.IDEATION, PipelineStage.PLANNING, 
+                            PipelineStage.SETUP, PipelineStage.CODING,
+                            PipelineStage.EXECUTION, PipelineStage.EXPERIMENT,
+                            PipelineStage.ANALYSIS, PipelineStage.FIGURE_GEN,
+                            PipelineStage.WRITING, PipelineStage.REVIEW
+                        ]
+                        for s in reset_stages:
+                            if s.value in manifest.stages:
+                                del manifest.stages[s.value]
+                        self.workspace._write_manifest(manifest)
+                        
+                        # Recursively restart pipeline loop
+                        return await self.run(topic)
+
             # Mark pipeline as DONE
             self.state_machine.transition(PipelineStage.DONE)
             self.workspace.update_manifest(current_stage=PipelineStage.DONE)

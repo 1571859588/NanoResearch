@@ -203,6 +203,53 @@ class _ExperimentAgentMixin:
             f"status={iteration_state.final_status}"
         )
 
+        # ---- Baseline Comparison ----
+        final_status = best_round_data["quick_eval_status"]
+        if final_status == "success" and "main_results" in best_round_data["metrics"]:
+            eval_metrics = best_round_data["metrics"].get("main_results", [])
+            if isinstance(eval_metrics, list):
+                proposed_metrics = {}
+                baseline_metrics = []
+                for entry in eval_metrics:
+                    if not isinstance(entry, dict):
+                        continue
+                    m_dict = {m.get("metric_name"): m.get("value") for m in entry.get("metrics", []) if isinstance(m, dict)}
+                    if entry.get("is_proposed"):
+                        proposed_metrics = m_dict
+                    else:
+                        baseline_metrics.append(m_dict)
+                
+                if proposed_metrics and baseline_metrics:
+                    # Heuristically find the primary metric from proposed_metrics
+                    primary_key = next(iter(proposed_metrics), None)
+                    if primary_key:
+                        _lower_is_better = primary_key and any(
+                            kw in primary_key.lower() for kw in ("loss", "error", "perplexity", "mse", "mae", "cer", "wer", "ece")
+                        )
+                        our_score = proposed_metrics[primary_key]
+                        
+                        # Find the best baseline score
+                        best_baseline = None
+                        for b_dict in baseline_metrics:
+                            if primary_key in b_dict:
+                                b_val = b_dict[primary_key]
+                                if best_baseline is None:
+                                    best_baseline = b_val
+                                elif _lower_is_better and b_val < best_baseline:
+                                    best_baseline = b_val
+                                elif not _lower_is_better and b_val > best_baseline:
+                                    best_baseline = b_val
+                        
+                        if best_baseline is not None:
+                            if _lower_is_better and our_score >= best_baseline:
+                                final_status = "failed_to_beat_baseline"
+                                self.log(f"Baseline Check FAILED: Our {primary_key}={our_score:.4f} did not beat Best Baseline {primary_key}={best_baseline:.4f}")
+                            elif not _lower_is_better and our_score <= best_baseline:
+                                final_status = "failed_to_beat_baseline"
+                                self.log(f"Baseline Check FAILED: Our {primary_key}={our_score:.4f} did not beat Best Baseline {primary_key}={best_baseline:.4f}")
+                            else:
+                                self.log(f"Baseline Check PASSED: Our {primary_key}={our_score:.4f} beat Best Baseline {primary_key}={best_baseline:.4f}")
+
         result = {
             "code_project_plan": project_plan,
             "generated_files": generated_files,
@@ -210,7 +257,7 @@ class _ExperimentAgentMixin:
             "code_verification": self._verify_code(generated_files),
             "code_execution": {"status": best_round_data["execution_status"]},
             "experiment_results": best_round_data["metrics"],
-            "experiment_status": best_round_data["quick_eval_status"],
+            "experiment_status": final_status,
             "iteration_state": iteration_state.model_dump(),
         }
         self.workspace.write_json("logs/experiment_output.json", result)
