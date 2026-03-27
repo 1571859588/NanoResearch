@@ -180,6 +180,7 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
                 self.log(f"Re-generated {filename} to fix invalid paths: {bad_paths}")
 
         original_train_command = code_plan.get("train_command", "python train.py")
+        original_baseline_command = code_plan.get("baseline_train_command", "")
         runner_assets = ensure_project_runner(code_dir, original_train_command)
         generated_files.extend([RUNNER_SCRIPT_NAME, RUNNER_CONFIG_NAME])
         self.log("Generated deterministic execution runner")
@@ -213,6 +214,8 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
         workspace_content.append("## Architecture Details\n")
         workspace_content.append(f"- **Architecture Option**: {code_plan.get('architecture_option', '')}")
         workspace_content.append(f"- **Entry Point**: {original_train_command}\n")
+        if original_baseline_command:
+            workspace_content.append(f"- **Baseline Entry Point**: {original_baseline_command}\n")
         workspace_content.append("## Files and Roles\n")
         for f in code_plan.get("files", []):
             if isinstance(f, dict) and f.get("path"):
@@ -233,6 +236,7 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
             "slurm_script": str(slurm_path),
             "train_command": runner_assets["runner_command"],
             "entry_train_command": original_train_command,
+            "baseline_train_command": original_baseline_command,
             "runner_script": runner_assets["runner_script"],
             "runner_config": runner_assets["runner_config"],
             "requirements_path": str(code_dir / "requirements.txt"),
@@ -264,8 +268,9 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
             "3. Include proper training loop, evaluation, checkpointing\n"
             "4. Log metrics to a results file (JSON or CSV)\n"
             "5. HARD REQUIREMENT: Your script MUST implement and evaluate both the requested Baselines and our Proposed Method. "
-            "It should accept a command-line argument like `--method [method_name]` to run each separately, or run them all sequentially if no argument is provided. "
-            "When logging results, ensure you mark `is_proposed=True` for our new method, and `is_proposed=False` for baselines.\n"
+            "It should accept a command-line argument like `--method [method_name]`. "
+            "When logging results, ensure you mark `is_proposed=True` for our new method, and `is_proposed=False` for baselines. "
+            "IMPORTANT: Your execution commands MUST be split into a baseline command and a proposed command so the orchestrator can run them in distinct isolated stages.\n"
             "6. Support command-line arguments for hyperparameters\n"
             "7. If a dataset is listed as AVAILABLE below, use its exact path\n"
             "8. All runtime downloads MUST go to the Data directory path below (use as root/cache_dir)\n"
@@ -341,7 +346,8 @@ Design a runnable project. Return JSON:
       "description": "Default hyperparameters and configuration"
     }}
   ],
-  "train_command": "python train.py --config config.py --epochs 10",
+  "baseline_train_command": "python train.py --config config.py --method [baseline_name]",
+  "train_command": "python train.py --config config.py --method [proposed_name]",
   "expected_output_files": ["results/metrics.json", "results/training_log.csv", "checkpoints/best_model.pt"]
 }}"""
 

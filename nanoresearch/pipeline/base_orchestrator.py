@@ -265,7 +265,8 @@ class BaseOrchestrator(ABC):
                         manifest = self.workspace.manifest
                         reset_stages = [
                             PipelineStage.IDEATION, PipelineStage.PLANNING, 
-                            PipelineStage.SETUP, PipelineStage.CODING,
+                            PipelineStage.SETUP, PipelineStage.BASELINE_CODING,
+                            PipelineStage.BASELINE_EXECUTION, PipelineStage.CODING,
                             PipelineStage.EXECUTION, PipelineStage.EXPERIMENT,
                             PipelineStage.ANALYSIS, PipelineStage.FIGURE_GEN,
                             PipelineStage.WRITING, PipelineStage.REVIEW

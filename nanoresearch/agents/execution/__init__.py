@@ -44,6 +44,12 @@ class ExecutionAgent(
         code_dir = Path(coding_output.get("code_dir", ""))
         slurm_script = coding_output.get("slurm_script", "")
 
+        train_cmd = coding_output.get("entry_train_command")
+        if train_cmd and code_dir.exists():
+            from nanoresearch.agents.project_runner import ensure_project_runner
+            runner_assets = ensure_project_runner(code_dir, train_cmd)
+            coding_output["train_command"] = runner_assets["runner_command"]
+
         if not code_dir.exists():
             raise RuntimeError(f"Code directory not found: {code_dir}")
 

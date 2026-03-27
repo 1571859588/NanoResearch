@@ -219,6 +219,21 @@ class _ExperimentAgentMixin:
                     else:
                         baseline_metrics.append(m_dict)
                 
+                # If baseline metrics are physically isolated by the pipeline, merge them here
+                if not baseline_metrics:
+                    baseline_file = code_dir / "results" / "baseline_metrics.json"
+                    try:
+                        import json
+                        if baseline_file.exists():
+                            b_data = json.loads(baseline_file.read_text(encoding="utf-8"))
+                            b_eval = b_data.get("main_results", [])
+                            for entry in b_eval:
+                                if not entry.get("is_proposed", False):
+                                    m_dict = {m.get("metric_name"): m.get("value") for m in entry.get("metrics", []) if isinstance(m, dict)}
+                                    baseline_metrics.append(m_dict)
+                    except Exception as e:
+                        self.log(f"Warning: Failed to load isolated baseline metrics: {e}")
+                
                 if proposed_metrics and baseline_metrics:
                     # Heuristically find the primary metric from proposed_metrics
                     primary_key = next(iter(proposed_metrics), None)

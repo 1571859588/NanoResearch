@@ -17,6 +17,7 @@ class PipelineStage(str, Enum):
     PLANNING = "PLANNING"
     EXPERIMENT = "EXPERIMENT"
     SETUP = "SETUP"
+    BASELINE_EXECUTION = "BASELINE_EXECUTION"
     CODING = "CODING"
     EXECUTION = "EXECUTION"
     ANALYSIS = "ANALYSIS"
@@ -83,6 +84,7 @@ DEEP_PROCESSING_STAGES: list[PipelineStage] = [
     PipelineStage.PLANNING,
     PipelineStage.SETUP,
     PipelineStage.CODING,
+    PipelineStage.BASELINE_EXECUTION,
     PipelineStage.EXECUTION,
     PipelineStage.ANALYSIS,
     PipelineStage.FIGURE_GEN,
