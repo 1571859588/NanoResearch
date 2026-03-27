@@ -2,8 +2,9 @@
 
 This agent intercepts the ExecutionAgent lifecycle to:
 1. Swap the runner command to `baseline_train_command`
-2. Clear stale iteration checkpoints so the loop runs fresh
-3. Scan per-baseline subdirectories for metrics and merge them into `baseline_metrics.json`
+2. Auto-detect baseline entry points when the field is missing
+3. Clear stale iteration checkpoints so the loop runs fresh
+4. Scan per-baseline subdirectories for metrics and merge them into `baseline_metrics.json`
 """
 
 import json
@@ -28,17 +29,25 @@ class BaselineExecutionAgent(ExecutionAgent):
     async def run(self, **inputs: Any) -> dict[str, Any]:
         """Override the full execution lifecycle for baseline-specific execution."""
         coding_output = dict(inputs.get("coding_output", {}))
-
-        baseline_cmd = coding_output.get("baseline_train_command", "")
-        if not baseline_cmd:
-            self.log("WARNING: No baseline_train_command found in coding_output, skipping baseline execution")
-            return {"status": "skipped", "reason": "no baseline command"}
-
         code_dir = Path(coding_output.get("code_dir", ""))
+
         if not code_dir.exists():
             raise RuntimeError(f"Code directory not found: {code_dir}")
 
-        self.log(f"Intercepting execution loop to run baseline validation: {baseline_cmd}")
+        # --- Step 0: Resolve baseline command (with fallback auto-detection) ---
+        baseline_cmd = coding_output.get("baseline_train_command", "").strip()
+
+        if not baseline_cmd:
+            baseline_cmd = self._auto_detect_baseline_command(code_dir)
+
+        if not baseline_cmd:
+            self.log(
+                "WARNING: No baseline_train_command found and no baselines/ "
+                "directory detected. Skipping baseline execution."
+            )
+            return {"status": "skipped", "reason": "no baseline command or baselines directory"}
+
+        self.log(f"Baseline execution command resolved to: {baseline_cmd}")
 
         # --- Step 1: Clear stale iteration checkpoints ---
         checkpoint_path = self.workspace.path / _LOCAL_CHECKPOINT
@@ -70,7 +79,6 @@ class BaselineExecutionAgent(ExecutionAgent):
         baseline_metrics_file = code_dir / "results" / "baseline_metrics.json"
 
         if baseline_metrics:
-            # Write the merged per-baseline metrics
             baseline_metrics_file.parent.mkdir(parents=True, exist_ok=True)
             baseline_metrics_file.write_text(
                 json.dumps(baseline_metrics, indent=2, ensure_ascii=False),
@@ -90,6 +98,57 @@ class BaselineExecutionAgent(ExecutionAgent):
             checkpoint_path.unlink()
 
         return result
+
+    def _auto_detect_baseline_command(self, code_dir: Path) -> str:
+        """Auto-detect the baseline execution command by scanning the code directory.
+
+        Checks for:
+        1. baselines/run_all.sh (primary, batch executor)
+        2. baselines/*/train.py (individual baseline scripts → build run_all.sh)
+        3. Any .sh or .py file under baselines/ as a last resort
+        """
+        baselines_dir = code_dir / "baselines"
+        if not baselines_dir.exists():
+            return ""
+
+        # Check 1: run_all.sh exists
+        run_all_sh = baselines_dir / "run_all.sh"
+        if run_all_sh.exists():
+            self.log(f"Auto-detected baseline entry: {run_all_sh.name}")
+            return "bash baselines/run_all.sh"
+
+        # Check 2: Per-baseline subdirectories with train.py
+        baseline_scripts = []
+        for slug_dir in sorted(baselines_dir.iterdir()):
+            if slug_dir.is_dir():
+                train_script = slug_dir / "train.py"
+                if train_script.exists():
+                    baseline_scripts.append(f"python baselines/{slug_dir.name}/train.py")
+
+        if baseline_scripts:
+            # Auto-generate run_all.sh
+            self.log(f"Auto-generating run_all.sh for {len(baseline_scripts)} baseline(s)")
+            run_all_content = "#!/bin/bash\nset -e\n\nSCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nPROJECT_ROOT=\"$(dirname \"$SCRIPT_DIR\")\"\ncd \"$PROJECT_ROOT\"\n\n"
+            for script in baseline_scripts:
+                run_all_content += f'echo "=== Running: {script} ==="\n{script}\n\n'
+            run_all_sh.write_text(run_all_content, encoding="utf-8")
+            run_all_sh.chmod(0o755)
+            return "bash baselines/run_all.sh"
+
+        # Check 3: Any .py file directly under baselines/
+        py_files = list(baselines_dir.glob("*.py"))
+        if py_files:
+            # Build a sequential command
+            commands = [f"python baselines/{f.name}" for f in py_files]
+            self.log(f"Auto-detected {len(commands)} baseline script(s) at baselines/ root")
+            run_all_content = "#!/bin/bash\nset -e\n\nSCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nPROJECT_ROOT=\"$(dirname \"$SCRIPT_DIR\")\"\ncd \"$PROJECT_ROOT\"\n\n"
+            for cmd in commands:
+                run_all_content += f'echo "=== Running: {cmd} ==="\n{cmd}\n\n'
+            run_all_sh.write_text(run_all_content, encoding="utf-8")
+            run_all_sh.chmod(0o755)
+            return "bash baselines/run_all.sh"
+
+        return ""
 
     @staticmethod
     def _collect_per_baseline_metrics(code_dir: Path) -> list[dict]:

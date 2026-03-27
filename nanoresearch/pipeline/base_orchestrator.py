@@ -344,6 +344,18 @@ class BaseOrchestrator(ABC):
                 inputs = self._prepare_inputs(stage, topic, accumulated, last_error)
                 result = await agent.run(**inputs)
 
+                # Post-execution validation: detect stages that returned but
+                # didn't actually produce usable output (e.g. "skipped")
+                if stage == PipelineStage.BASELINE_EXECUTION:
+                    if isinstance(result, dict) and result.get("status") == "skipped":
+                        reason = result.get("reason", "unknown")
+                        raise RuntimeError(
+                            f"BASELINE_EXECUTION was skipped ({reason}). "
+                            "This blocks downstream experiment comparison. "
+                            "Ensure the CodingAgent generates baselines/ directory "
+                            "with run_all.sh or per-baseline train.py scripts."
+                        )
+
                 self.workspace.mark_stage_completed(
                     stage, self._OUTPUT_FILE_MAP.get(stage, ""),
                 )

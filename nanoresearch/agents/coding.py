@@ -181,6 +181,24 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
 
         original_train_command = code_plan.get("train_command", "python train.py")
         original_baseline_command = code_plan.get("baseline_train_command", "")
+
+        # Fallback: if LLM omitted baseline_train_command but generated baseline files,
+        # auto-detect the command from the file structure
+        if not original_baseline_command:
+            baselines_dir = code_dir / "baselines"
+            if (baselines_dir / "run_all.sh").exists():
+                original_baseline_command = "bash baselines/run_all.sh"
+                self.log("Auto-detected baseline command: bash baselines/run_all.sh")
+            elif baselines_dir.exists():
+                # Check for per-baseline train.py scripts
+                baseline_scripts = []
+                for slug_dir in sorted(baselines_dir.iterdir()):
+                    if slug_dir.is_dir() and (slug_dir / "train.py").exists():
+                        baseline_scripts.append(f"python baselines/{slug_dir.name}/train.py")
+                if baseline_scripts:
+                    original_baseline_command = "bash baselines/run_all.sh"
+                    self.log(f"Auto-detected {len(baseline_scripts)} baseline script(s), command set to bash baselines/run_all.sh")
+
         runner_assets = ensure_project_runner(code_dir, original_train_command)
         generated_files.extend([RUNNER_SCRIPT_NAME, RUNNER_CONFIG_NAME])
         self.log("Generated deterministic execution runner")
