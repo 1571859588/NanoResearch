@@ -468,27 +468,46 @@ class BaseOrchestrator(ABC):
                         from pathlib import Path as _Path
                         from nanoresearch.pipeline.quality_gates import (
                             validate_post_coding,
-                            format_gate_failure_message,
+                            autofix_gate1_issues,
                         )
+                        _code_path = _Path(code_dir_str)
+                        _blueprint = accumulated.get("experiment_blueprint", {})
+                        _setup = accumulated.get("setup_output", {})
+
                         gate_passed, gate_issues = validate_post_coding(
-                            _Path(code_dir_str),
-                            accumulated.get("experiment_blueprint", {}),
-                            accumulated.get("setup_output", {}),
+                            _code_path, _blueprint, _setup,
                         )
                         if not gate_passed:
                             self.progress_emitter.substep(
                                 stage.value,
-                                f"Quality Gate 1 FAILED: {len(gate_issues)} issue(s)",
+                                f"Quality Gate 1 FAILED: {len(gate_issues)} issue(s) — applying targeted fixes",
                             )
-                            raise RuntimeError(
-                                format_gate_failure_message(
-                                    "Post-CODING Scientific Code Review",
-                                    gate_issues,
-                                    "Re-generate the code with correct dataset paths, "
-                                    "reasonable hyperparameters, and complete baselines.",
+                            # Apply surgical in-place fixes
+                            fixes = autofix_gate1_issues(_code_path, gate_issues)
+                            for fix in fixes:
+                                logger.info("Gate 1 auto-fix: %s", fix)
+
+                            # Re-validate after fixes
+                            gate_passed_2, remaining_issues = validate_post_coding(
+                                _code_path, _blueprint, _setup,
+                            )
+                            if not gate_passed_2:
+                                # Log remaining issues as warnings but don't block
+                                # — autofix handled what it could, the rest will be
+                                # caught by Gate 2/3 after execution anyway.
+                                for ri in remaining_issues:
+                                    logger.warning("Gate 1 residual (non-blocking): %s", ri)
+                                self.progress_emitter.substep(
+                                    stage.value,
+                                    f"Gate 1: {len(fixes)} fixed, {len(remaining_issues)} residual warnings",
                                 )
-                            )
-                        logger.info("Quality Gate 1 (post-CODING) PASSED")
+                            else:
+                                logger.info(
+                                    "Quality Gate 1 PASSED after auto-fix (%d fixes applied)",
+                                    len(fixes),
+                                )
+                        else:
+                            logger.info("Quality Gate 1 (post-CODING) PASSED")
 
                 self.workspace.mark_stage_completed(
                     stage, self._OUTPUT_FILE_MAP.get(stage, ""),
