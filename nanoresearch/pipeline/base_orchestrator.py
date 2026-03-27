@@ -224,35 +224,8 @@ class BaseOrchestrator(ABC):
                             f"Blueprint validation: {len(issues)} issue(s) found",
                         )
 
-                # === QUALITY GATE 1: Post-CODING Scientific Code Review ===
-                if stage == PipelineStage.CODING:
-                    coding_out = results.get("coding_output", {})
-                    code_dir_str = coding_out.get("code_dir", "")
-                    if code_dir_str:
-                        from pathlib import Path as _Path
-                        from nanoresearch.pipeline.quality_gates import (
-                            validate_post_coding,
-                            format_gate_failure_message,
-                        )
-                        gate_passed, gate_issues = validate_post_coding(
-                            _Path(code_dir_str),
-                            results.get("experiment_blueprint", {}),
-                            results.get("setup_output", {}),
-                        )
-                        if not gate_passed:
-                            self.progress_emitter.substep(
-                                stage.value,
-                                f"Quality Gate 1 FAILED: {len(gate_issues)} issue(s)",
-                            )
-                            raise RuntimeError(
-                                format_gate_failure_message(
-                                    "Post-CODING Scientific Code Review",
-                                    gate_issues,
-                                    "Re-generate the code with correct dataset paths, "
-                                    "reasonable hyperparameters, and complete baselines.",
-                                )
-                            )
-                        logger.info("Quality Gate 1 (post-CODING) PASSED")
+                # NOTE: Gate 1 (post-CODING) is checked inside _run_stage_with_retry
+                # so that failures trigger the retry mechanism.
 
                 # === QUALITY GATE 2: Post-EXECUTION Result Sanity Check ===
                 if stage == PipelineStage.EXECUTION:
@@ -486,6 +459,36 @@ class BaseOrchestrator(ABC):
                             "Ensure the CodingAgent generates baselines/ directory "
                             "with run_all.sh or per-baseline train.py scripts."
                         )
+
+                # === QUALITY GATE 1: Post-CODING Scientific Code Review ===
+                # Must be inside the retry loop so failures trigger retries
+                if stage == PipelineStage.CODING:
+                    code_dir_str = result.get("code_dir", "")
+                    if code_dir_str:
+                        from pathlib import Path as _Path
+                        from nanoresearch.pipeline.quality_gates import (
+                            validate_post_coding,
+                            format_gate_failure_message,
+                        )
+                        gate_passed, gate_issues = validate_post_coding(
+                            _Path(code_dir_str),
+                            accumulated.get("experiment_blueprint", {}),
+                            accumulated.get("setup_output", {}),
+                        )
+                        if not gate_passed:
+                            self.progress_emitter.substep(
+                                stage.value,
+                                f"Quality Gate 1 FAILED: {len(gate_issues)} issue(s)",
+                            )
+                            raise RuntimeError(
+                                format_gate_failure_message(
+                                    "Post-CODING Scientific Code Review",
+                                    gate_issues,
+                                    "Re-generate the code with correct dataset paths, "
+                                    "reasonable hyperparameters, and complete baselines.",
+                                )
+                            )
+                        logger.info("Quality Gate 1 (post-CODING) PASSED")
 
                 self.workspace.mark_stage_completed(
                     stage, self._OUTPUT_FILE_MAP.get(stage, ""),
