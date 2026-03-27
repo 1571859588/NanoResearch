@@ -267,11 +267,12 @@ class CodingAgent(_CodingHelpersMixin, BaseResearchAgent):
             "2. Use PyTorch and standard ML libraries\n"
             "3. Include proper training loop, evaluation, checkpointing\n"
             "4. Log metrics to a results file (JSON or CSV)\n"
-            "5. HARD REQUIREMENT (PHYSICAL ISOLATION): All baseline models, their specific training loops, and execution scripts MUST be placed in a dedicated `baselines/` subdirectory (e.g. `baselines/train_baseline.py`, `baselines/model_baseline.py`). "
-            "DO NOT mix baseline execution logic into the proposed method's `train.py`. The proposed method stays in the main root code directory. They may share `dataset.py` from the root directory if necessary. "
+            "5. HARD REQUIREMENT (PHYSICAL ISOLATION & BATCH EXECUTION): All baseline models, their specific training loops, and execution scripts MUST be placed in a dedicated `baselines/` subdirectory. "
+            "Because different baselines have vastly different architectures and setups, you must create a `baselines/run_all.sh` executable bash script that sequentially calls the entry point for EACH required baseline (e.g. `python baselines/run_clip_cbm.py && python baselines/run_clip_vg.py`). "
+            "DO NOT mix baseline execution logic into the proposed method's `train.py`. "
             "When logging results in either script, ensure you mark `is_proposed=True` for our new method, and `is_proposed=False` for baselines. "
-            "ALL metrics MUST be logged to `results/metrics.json` (relative to the project root directory, not inside the `baselines/` folder). "
-            "IMPORTANT: Your `baseline_train_command` MUST invoke the script inside the `baselines/` directory (e.g. `python baselines/train_baseline.py --method [baseline_name]`).\n"
+            "ALL metrics MUST be logged to `results/metrics.json` (relative to the project root directory, natively parsing JSON arrays). "
+            "IMPORTANT: Your `baseline_train_command` MUST invoke `bash baselines/run_all.sh`.\n"
             "6. Support command-line arguments for hyperparameters\n"
             "7. If a dataset is listed as AVAILABLE below, use its exact path\n"
             "8. All runtime downloads MUST go to the Data directory path below (use as root/cache_dir)\n"
@@ -347,16 +348,16 @@ Design a runnable project. Return JSON:
       "description": "Default hyperparameters and configuration"
     }},
     {{
-      "path": "baselines/train_baseline.py",
-      "description": "Isolated baseline training loop and execution script",
+      "path": "baselines/run_all.sh",
+      "description": "Bash script that executes all baseline training/eval sequentially",
       "is_entrypoint": true
     }},
     {{
-      "path": "baselines/model_baseline.py",
-      "description": "Baseline model architectures"
+      "path": "baselines/clip_cbm_baseline.py",
+      "description": "Specific implementation for one baseline"
     }}
   ],
-  "baseline_train_command": "python baselines/train_baseline.py --config config.py --method [baseline_name]",
+  "baseline_train_command": "bash baselines/run_all.sh",
   "train_command": "python train.py --config config.py --method [proposed_name]",
   "expected_output_files": ["results/metrics.json", "results/training_log.csv", "checkpoints/best_model.pt"]
 }}"""
