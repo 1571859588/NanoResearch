@@ -13,7 +13,12 @@ import traceback
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
-from nanoresearch.agents.base import BaseResearchAgent
+from nanoresearch.agents.ideation import IdeationAgent
+from nanoresearch.agents.planning import PlanningAgent
+from nanoresearch.agents.setup import SetupAgent
+from nanoresearch.agents.coding import CodingAgent
+from nanoresearch.agents.execution import ExecutionAgent
+from nanoresearch.agents.baseline_execution import BaselineExecutionAgent
 from nanoresearch.config import ResearchConfig
 from nanoresearch.pipeline.blueprint_validator import validate_blueprint
 from nanoresearch.pipeline.cost_tracker import CostTracker

@@ -2,7 +2,7 @@ import logging
 from typing import Any
 from pathlib import Path
 
-from nanoresearch.agents.execution.execution_agent import ExecutionAgent
+from nanoresearch.agents.execution import ExecutionAgent
 from nanoresearch.schemas.manifest import PipelineStage
 
 logger = logging.getLogger(__name__)

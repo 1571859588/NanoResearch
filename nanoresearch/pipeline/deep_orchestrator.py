@@ -9,7 +9,7 @@ from typing import Any
 from nanoresearch.agents.analysis import AnalysisAgent
 from nanoresearch.agents.base import BaseResearchAgent
 from nanoresearch.agents.coding import CodingAgent
-from nanoresearch.agents.execution.execution_agent import ExecutionAgent
+from nanoresearch.agents.execution import ExecutionAgent
 from nanoresearch.agents.baseline_execution import BaselineExecutionAgent
 from nanoresearch.agents.figure_gen import FigureAgent
 from nanoresearch.agents.ideation import IdeationAgent
