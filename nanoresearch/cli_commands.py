@@ -67,7 +67,8 @@ def _migrate_workspace_run_records(ws: Workspace) -> dict[str, int]:
 
         existing_run_id = str(output.get("global_run_id") or "").strip()
         if existing_run_id:
-            history_path = ws.global_results_dir / "history" / f"{existing_run_id}.json"
+            topic_slug = ws._slug(ws.manifest.topic)
+            history_path = ws.global_results_dir / "history" / topic_slug / f"{existing_run_id}.json"
             if history_path.is_file():
                 counts["skipped_existing"] += 1
                 continue
@@ -84,7 +85,7 @@ def _migrate_workspace_run_records(ws: Workspace) -> dict[str, int]:
 
         output["global_run_id"] = run_record.get("run_id", "")
         output["global_run_record"] = str(
-            ws.global_results_dir / "history" / f"{run_record.get('run_id', '')}.json"
+            ws.global_results_dir / "history" / ws._slug(ws.manifest.topic) / f"{run_record.get('run_id', '')}.json"
         )
         output["global_latest_index"] = str(ws.global_results_dir / "latest_index.json")
         output["_output_path"] = str(ws.path / subpath)

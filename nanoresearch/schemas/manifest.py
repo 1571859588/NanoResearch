@@ -197,4 +197,4 @@ class WorkspaceManifest(BaseModel):
     # Global registry linkage (repo-level references/results tracking)
     latest_global_run_id: str = ""
     latest_global_run_record: str = ""
-    latest_global_index_path: str = "results/latest_index.json"
+    latest_global_index_path: str = "registry/latest_index.json"

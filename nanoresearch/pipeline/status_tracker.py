@@ -16,14 +16,28 @@ class StatusTracker:
 
     def __init__(self, workspace_path: Path):
         self.workspace_path = workspace_path
-        # Use root results/ if available, otherwise session results/
-        # (StatusTracker is typically called from a workspace context)
-        self.results_dir = workspace_path / "results"
-        self.index_path = self.results_dir / "latest_index.json"
-        self.status_md_path = self.results_dir / "STATUS.md"
+        # The session results are local
+        self.local_results_dir = workspace_path / "results"
+        # The registry is global (at repo root)
+        self.repo_root = workspace_path.parent.parent
+        self.registry_dir = self.repo_root / "registry"
+        
+        self.index_path = self.registry_dir / "latest_index.json"
+        self.status_md_path = self.local_results_dir / "STATUS.md"
 
     def generate_status_report(self):
         """Generate/update STATUS.md based on latest_index.json and references."""
+        # Load session_id from manifest if possible
+        session_id = None
+        manifest_path = self.workspace_path / "manifest.json"
+        if manifest_path.exists():
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                    session_id = manifest.get("session_id")
+            except Exception:
+                pass
+
         if not self.index_path.exists():
             logger.debug("latest_index.json not found, skipping STATUS.md generation")
             return
@@ -38,7 +52,10 @@ class StatusTracker:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         
         md = f"# Research Status Manifest\n\n"
-        md += f"*Last Updated: {now}*\n\n"
+        md += f"*Last Updated: {now}*\n"
+        if session_id:
+            md += f"*Session ID: {session_id}*\n"
+        md += "\n"
         
         # 1. Global Metrics Table
         md += "## 📊 Benchmark Results\n\n"
@@ -52,9 +69,14 @@ class StatusTracker:
             for b_name, b_info in sorted(benchmarks.items()):
                 metrics = b_info.get("metrics", {})
                 for m_name, m_info in sorted(metrics.items()):
-                    val = m_info.get("best_value", "N/A")
-                    run_id = m_info.get("best_run_id", "N/A")
-                    source = m_info.get("source", "experiment")
+                    if isinstance(m_info, dict):
+                        val = m_info.get("best_value", "N/A")
+                        run_id = m_info.get("best_run_id", "N/A")
+                        source = m_info.get("source", "experiment")
+                    else:
+                        val = m_info
+                        run_id = "N/A"
+                        source = "manual"
                     md += f"| {b_name} | {m_name} | {val} | {run_id} | {source} |\n"
         
         md += "\n"
@@ -94,26 +116,44 @@ class StatusTracker:
         
         md += "\n"
         
-        # 3. Recent Execution Runs (from global index history)
-        md += "## 🚀 Recent Execution History\n\n"
-        md += "| Run ID | Stage | Status | Created At | Session |\n"
-        md += "|--------|-------|--------|------------|---------|\n"
-        
+        # 3. Recent Execution Runs (filtered by session)
         history_map = index.get("history", {})
-        if not history_map:
-            md += "| (none) | | | | |\n"
-        else:
+        if history_map:
             history = list(history_map.values())
-            # Sort by run_id descending if possible, else alphabetical
             history.sort(key=lambda x: str(x.get("run_id", "")), reverse=True)
             
-            for run in history[:20]: # show last 20
-                rid = run.get("run_id", "???")
-                stage = run.get("stage", "???")
-                status = run.get("final_status") or run.get("experiment_status", "pending")
-                created = run.get("created_at", "???")
-                sid = run.get("session_id", "???")[:8]
-                md += f"| `{rid}` | {stage} | {status} | {created} | `{sid}` |\n"
+            # Filter into current session vs others
+            current_session_runs = [r for r in history if r.get("session_id") == session_id]
+            other_runs = [r for r in history if r.get("session_id") != session_id]
+            
+            if current_session_runs:
+                md += "## 🚀 Current Session History\n\n"
+                md += "| Run ID | Stage | Status | Created At |\n"
+                md += "|--------|-------|--------|------------|\n"
+                for run in current_session_runs[:15]:
+                    rid = run.get("run_id", "???")
+                    stage = run.get("stage", "???")
+                    status = run.get("final_status") or run.get("experiment_status", "pending")
+                    created = run.get("created_at", "???")
+                    md += f"| `{rid}` | {stage} | {status} | {created} |\n"
+                md += "\n"
+                
+            if other_runs:
+                md += "## 🌐 Global Registry Context (Other Sessions)\n\n"
+                md += "| Run ID | Topic | Stage | Status | Session |\n"
+                md += "|--------|-------|-------|--------|---------|\n"
+                for run in other_runs[:10]:
+                    rid = run.get("run_id", "???")
+                    # Try to get a readable topic name from workspace path or method_slug
+                    topic = run.get("topic") or Path(run.get("workspace", "")).name
+                    stage = run.get("stage", "???")
+                    status = run.get("final_status") or run.get("experiment_status", "pending")
+                    sid = run.get("session_id", "???")[:8]
+                    md += f"| `{rid}` | {topic} | {stage} | {status} | `{sid}` |\n"
+                md += "\n"
+        else:
+            md += "## 🚀 Execution History\n\n"
+            md += "| (none) | | | | |\n\n"
             
         self.status_md_path.parent.mkdir(parents=True, exist_ok=True)
         self.status_md_path.write_text(md, encoding="utf-8")

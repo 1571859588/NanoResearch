@@ -342,7 +342,8 @@ class Workspace(_WorkspaceExportMixin):
 
     @property
     def global_results_dir(self) -> Path:
-        return self.repo_root / "results"
+        """Global research registry (shared across all topics)."""
+        return self.repo_root / "registry"
 
     def ensure_global_research_layout(self) -> None:
         """Create global references/results registry structure if missing."""
@@ -467,7 +468,8 @@ class Workspace(_WorkspaceExportMixin):
 
         history_dir = self.global_results_dir / "history"
         latest_record: dict[str, Any] = {}
-        for rec_path in sorted(history_dir.glob("*.json"), key=lambda p: p.stem):
+        # Support hierarchical history: registry/history/<topic>/<run>.json
+        for rec_path in sorted(history_dir.rglob("*.json"), key=lambda p: p.stem):
             try:
                 record = json.loads(rec_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
@@ -550,7 +552,11 @@ class Workspace(_WorkspaceExportMixin):
             ],
         }
 
-        history_record_path = self.global_results_dir / "history" / f"{run_id}.json"
+        topic_slug = self._slug(self.manifest.topic)
+        topic_history_dir = self.global_results_dir / "history" / topic_slug
+        topic_history_dir.mkdir(parents=True, exist_ok=True)
+        
+        history_record_path = topic_history_dir / f"{run_id}.json"
         history_record_path.write_text(
             json.dumps(record, indent=2, ensure_ascii=False, default=str),
             encoding="utf-8",
@@ -574,7 +580,7 @@ class Workspace(_WorkspaceExportMixin):
         self.update_manifest(
             latest_global_run_id=run_id,
             latest_global_run_record=str(history_record_path),
-            latest_global_index_path="results/latest_index.json",
+            latest_global_index_path="registry/latest_index.json",
         )
         return record
 
