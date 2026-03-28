@@ -35,6 +35,40 @@ class ExecutionAgent(
         """Reuse experiment-stage model routing for execution-time reasoning."""
         return self.config.for_stage("experiment")
 
+    def _stage_output_subpath(self) -> str:
+        return (
+            "plans/baseline_execution_output.json"
+            if self.stage == PipelineStage.BASELINE_EXECUTION
+            else "plans/execution_output.json"
+        )
+
+    def _register_global_run_record(
+        self,
+        final_result: dict[str, Any],
+        experiment_blueprint: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist repo-level run record and attach index pointers to output."""
+        output_copy = dict(final_result)
+        output_path = self.workspace.path / self._stage_output_subpath()
+        output_copy["_output_path"] = str(output_path)
+
+        run_kind = "baseline_execution" if self.stage == PipelineStage.BASELINE_EXECUTION else "execution"
+        run_record = self.workspace.register_research_run(
+            stage=self.stage,
+            execution_output=output_copy,
+            experiment_blueprint=experiment_blueprint,
+            run_kind=run_kind,
+        )
+        final_result["global_run_id"] = run_record.get("run_id", "")
+        final_result["global_run_record"] = str(
+            self.workspace.global_results_dir / "history" / f"{run_record.get('run_id', '')}.json"
+        )
+        final_result["global_latest_index"] = str(
+            self.workspace.global_results_dir / "latest_index.json"
+        )
+        final_result["_output_path"] = str(output_path)
+        return final_result
+
     async def run(self, **inputs: Any) -> dict[str, Any]:
         coding_output: dict = inputs.get("coding_output", {})
         experiment_blueprint: dict = inputs.get("experiment_blueprint", {})
@@ -93,7 +127,8 @@ class ExecutionAgent(
                 topic,
                 remediation_ledger=remediation_ledger,
             )
-            self.workspace.write_json("plans/execution_output.json", final_result)
+            final_result = self._register_global_run_record(final_result, experiment_blueprint)
+            self.workspace.write_json(self._stage_output_subpath(), final_result)
             return final_result
 
         # Pre-flight: fix common SLURM issues before first submission
@@ -386,5 +421,6 @@ class ExecutionAgent(
         final_result["remediation_ledger"] = list(remediation_ledger)
         final_result["remediation_ledger_path"] = self._persist_remediation_ledger(remediation_ledger)
         final_result["repair_snapshot_journal_path"] = self._repair_snapshot_journal_path()
-        self.workspace.write_json("plans/execution_output.json", final_result)
+        final_result = self._register_global_run_record(final_result, experiment_blueprint)
+        self.workspace.write_json(self._stage_output_subpath(), final_result)
         return final_result

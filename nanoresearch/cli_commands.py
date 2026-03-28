@@ -30,6 +30,129 @@ from nanoresearch.cli import (
 )
 
 
+def _migrate_workspace_run_records(ws: Workspace) -> dict[str, int]:
+    """Backfill global run records for legacy execution outputs in one workspace."""
+    counts = {
+        "migrated": 0,
+        "skipped_existing": 0,
+        "missing_outputs": 0,
+        "errors": 0,
+    }
+
+    try:
+        blueprint = ws.read_json("plans/experiment_blueprint.json")
+        if not isinstance(blueprint, dict):
+            blueprint = {}
+    except FileNotFoundError:
+        blueprint = {}
+
+    stages = [
+        ("plans/baseline_execution_output.json", PipelineStage.BASELINE_EXECUTION, "baseline_execution"),
+        ("plans/execution_output.json", PipelineStage.EXECUTION, "execution"),
+    ]
+
+    for subpath, stage, run_kind in stages:
+        try:
+            output = ws.read_json(subpath)
+        except FileNotFoundError:
+            counts["missing_outputs"] += 1
+            continue
+        except Exception:
+            counts["errors"] += 1
+            continue
+
+        if not isinstance(output, dict):
+            counts["errors"] += 1
+            continue
+
+        existing_run_id = str(output.get("global_run_id") or "").strip()
+        if existing_run_id:
+            history_path = ws.global_results_dir / "history" / f"{existing_run_id}.json"
+            if history_path.is_file():
+                counts["skipped_existing"] += 1
+                continue
+
+        output_payload = dict(output)
+        output_payload["_output_path"] = str(ws.path / subpath)
+
+        run_record = ws.register_research_run(
+            stage=stage,
+            execution_output=output_payload,
+            experiment_blueprint=blueprint,
+            run_kind=run_kind,
+        )
+
+        output["global_run_id"] = run_record.get("run_id", "")
+        output["global_run_record"] = str(
+            ws.global_results_dir / "history" / f"{run_record.get('run_id', '')}.json"
+        )
+        output["global_latest_index"] = str(ws.global_results_dir / "latest_index.json")
+        output["_output_path"] = str(ws.path / subpath)
+        ws.write_json(subpath, output)
+        counts["migrated"] += 1
+
+    return counts
+
+
+@app.command()
+def migrate_results(
+    workspace: Path = typer.Option(None, "--workspace", "-w", help="Single workspace to migrate"),
+    root: Path = typer.Option(_DEFAULT_ROOT, "--root", "-r", help="Workspace root for batch migration"),
+) -> None:
+    """Migrate legacy execution outputs into global results/history + latest index."""
+    workspaces: list[Workspace] = []
+    if workspace is not None:
+        workspaces.append(_load_workspace_safe(workspace))
+    else:
+        if not root.is_dir():
+            console.print(f"[yellow]Workspace root not found:[/yellow] {root}")
+            raise typer.Exit(1)
+        for session_dir in sorted(root.iterdir()):
+            if not session_dir.is_dir():
+                continue
+            manifest_path = session_dir / "manifest.json"
+            if not manifest_path.is_file():
+                continue
+            try:
+                workspaces.append(Workspace.load(session_dir))
+            except Exception:
+                continue
+
+    if not workspaces:
+        console.print("[yellow]No workspaces found to migrate.[/yellow]")
+        return
+
+    totals = {
+        "workspaces": 0,
+        "migrated": 0,
+        "skipped_existing": 0,
+        "missing_outputs": 0,
+        "errors": 0,
+    }
+
+    for ws in workspaces:
+        summary = _migrate_workspace_run_records(ws)
+        totals["workspaces"] += 1
+        totals["migrated"] += summary["migrated"]
+        totals["skipped_existing"] += summary["skipped_existing"]
+        totals["missing_outputs"] += summary["missing_outputs"]
+        totals["errors"] += summary["errors"]
+
+    # Rebuild latest index from full history to guarantee consistency.
+    workspaces[0].rebuild_latest_index_from_history()
+
+    console.print(Panel(
+        f"[bold]Workspaces scanned:[/bold] {totals['workspaces']}\n"
+        f"[bold]Run records migrated:[/bold] {totals['migrated']}\n"
+        f"[bold]Already migrated:[/bold] {totals['skipped_existing']}\n"
+        f"[bold]Missing outputs:[/bold] {totals['missing_outputs']}\n"
+        f"[bold]Errors:[/bold] {totals['errors']}\n\n"
+        f"[bold]Latest index:[/bold] {workspaces[0].global_results_dir / 'latest_index.json'}",
+        title="Results Migration Summary",
+        border_style="cyan",
+    ))
+
+
 @app.command()
 def export(
     workspace: Path = typer.Option(..., "--workspace", "-w", help="Path to workspace directory"),

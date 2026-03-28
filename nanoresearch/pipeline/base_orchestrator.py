@@ -446,6 +446,28 @@ class BaseOrchestrator(ABC):
 
                 agent = self._agents[stage]
                 inputs = self._prepare_inputs(stage, topic, accumulated, last_error)
+
+                if stage in {PipelineStage.BASELINE_EXECUTION, PipelineStage.EXECUTION}:
+                    blueprint = accumulated.get("experiment_blueprint", {})
+                    paper_summary_check = {}
+                    if isinstance(blueprint, dict):
+                        paper_summary_check = blueprint.get("paper_summary_check", {}) or {}
+                    missing_count = int(paper_summary_check.get("missing_count", 0) or 0)
+                    if not paper_summary_check:
+                        paper_summary_check = self.workspace.validate_baseline_paper_summaries(blueprint)
+                        missing_count = int(paper_summary_check.get("missing_count", 0) or 0)
+                        if isinstance(blueprint, dict):
+                            blueprint["paper_summary_check"] = paper_summary_check
+                            accumulated["experiment_blueprint"] = blueprint
+                            self.workspace.write_json("plans/experiment_blueprint.json", blueprint)
+                    if missing_count > 0:
+                        queue_path = paper_summary_check.get("queue_path", "plans/paper_enrichment_queue.json")
+                        raise RuntimeError(
+                            "Baseline reference summaries are incomplete "
+                            f"({missing_count} pending). Resolve queue first: {queue_path}. "
+                            "Use ccr code with paper-reading skills to enrich missing fields."
+                        )
+
                 result = await agent.run(**inputs)
 
                 # Post-execution validation: detect stages that returned but

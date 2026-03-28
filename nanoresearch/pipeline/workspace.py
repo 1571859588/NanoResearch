@@ -11,6 +11,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from nanoresearch.schemas.manifest import (
     ArtifactRecord,
@@ -37,7 +38,17 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_ROOT = Path("/mnt/public/sichuan_a/nyt/ai/NanoResearch/workspaces")
 
-WORKSPACE_DIRS = ["papers", "plans", "drafts", "figures", "logs", "code"]
+WORKSPACE_DIRS = [
+    "papers",
+    "plans",
+    "drafts",
+    "figures",
+    "logs",
+    "code",
+    "baselines",
+    "benchmarks",
+    "results",
+]
 
 
 class Workspace(_WorkspaceExportMixin):
@@ -85,6 +96,7 @@ class Workspace(_WorkspaceExportMixin):
         )
         ws = cls(ws_path)
         ws._write_manifest(manifest)
+        ws.ensure_global_research_layout()
         return ws
 
     @classmethod
@@ -93,6 +105,7 @@ class Workspace(_WorkspaceExportMixin):
             raise FileNotFoundError(f"Workspace directory not found: {path}")
         ws = cls(path)
         ws.manifest  # validate readable
+        ws.ensure_global_research_layout()
         return ws
 
     # ---- manifest --------------------------------------------------------
@@ -305,6 +318,393 @@ class Workspace(_WorkspaceExportMixin):
     @property
     def code_dir(self) -> Path:
         return self.path / "code"
+
+    @property
+    def baselines_dir(self) -> Path:
+        return self.path / "baselines"
+
+    @property
+    def benchmarks_dir(self) -> Path:
+        return self.path / "benchmarks"
+
+    @property
+    def results_dir(self) -> Path:
+        return self.path / "results"
+
+    @property
+    def repo_root(self) -> Path:
+        """Repository root (parent of workspaces directory)."""
+        return self.path.parent.parent
+
+    @property
+    def global_references_dir(self) -> Path:
+        return self.repo_root / "references"
+
+    @property
+    def global_results_dir(self) -> Path:
+        return self.repo_root / "results"
+
+    def ensure_global_research_layout(self) -> None:
+        """Create global references/results registry structure if missing."""
+        references_dirs = [
+            self.global_references_dir,
+            self.global_references_dir / "papers",
+            self.global_references_dir / "benchmarks",
+        ]
+        results_dirs = [
+            self.global_results_dir,
+            self.global_results_dir / "history",
+            self.global_results_dir / "by_baseline",
+            self.global_results_dir / "by_benchmark",
+            self.global_results_dir / "counters",
+        ]
+        for d in [*references_dirs, *results_dirs]:
+            d.mkdir(parents=True, exist_ok=True)
+
+        latest_index = self.global_results_dir / "latest_index.json"
+        if not latest_index.exists():
+            latest_index.write_text(
+                json.dumps(
+                    {
+                        "updated_at": "",
+                        "latest_run": {},
+                        "baselines": {},
+                        "benchmarks": {},
+                        "methods": {},
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+    @staticmethod
+    def _slug(value: str) -> str:
+        text = re.sub(r"[^a-zA-Z0-9]+", "_", (value or "").strip().lower())
+        return text.strip("_") or "unknown"
+
+    @staticmethod
+    def _safe_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+    def _load_latest_index(self) -> dict[str, Any]:
+        self.ensure_global_research_layout()
+        latest_index = self.global_results_dir / "latest_index.json"
+        try:
+            payload = json.loads(latest_index.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
+        return {
+            "updated_at": "",
+            "latest_run": {},
+            "baselines": {},
+            "benchmarks": {},
+            "methods": {},
+        }
+
+    def _save_latest_index(self, payload: dict[str, Any]) -> Path:
+        self.ensure_global_research_layout()
+        latest_index = self.global_results_dir / "latest_index.json"
+        latest_index.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+        return latest_index
+
+    def allocate_global_run_id(self) -> str:
+        self.ensure_global_research_layout()
+        counter_file = self.global_results_dir / "counters" / "global_run_counter.txt"
+        current = 0
+        if counter_file.exists():
+            raw = counter_file.read_text(encoding="utf-8").strip()
+            if raw.isdigit():
+                current = int(raw)
+        current += 1
+        counter_file.parent.mkdir(parents=True, exist_ok=True)
+        counter_file.write_text(str(current), encoding="utf-8")
+        return f"{current:05d}"
+
+    def update_latest_index(self, run_record: dict[str, Any]) -> Path:
+        payload = self._load_latest_index()
+        now = datetime.now(timezone.utc).isoformat()
+
+        run_id = self._safe_text(run_record.get("run_id"))
+        baseline_slug = self._slug(self._safe_text(run_record.get("baseline_slug")))
+        benchmark_slug = self._slug(self._safe_text(run_record.get("benchmark_slug")))
+        method_slug = self._slug(self._safe_text(run_record.get("method_slug")))
+
+        payload["updated_at"] = now
+        payload["latest_run"] = run_record
+        if baseline_slug:
+            payload.setdefault("baselines", {})[baseline_slug] = run_record
+        if benchmark_slug:
+            payload.setdefault("benchmarks", {})[benchmark_slug] = run_record
+        if method_slug:
+            payload.setdefault("methods", {})[method_slug] = run_record
+        if run_id:
+            payload.setdefault("history", {})[run_id] = run_record
+
+        return self._save_latest_index(payload)
+
+    def rebuild_latest_index_from_history(self) -> Path:
+        """Recompute results/latest_index.json from results/history/*.json."""
+        self.ensure_global_research_layout()
+        payload: dict[str, Any] = {
+            "schema_version": "1.0",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "latest_run": {},
+            "baselines": {},
+            "benchmarks": {},
+            "methods": {},
+            "history": {},
+        }
+
+        history_dir = self.global_results_dir / "history"
+        latest_record: dict[str, Any] = {}
+        for rec_path in sorted(history_dir.glob("*.json"), key=lambda p: p.stem):
+            try:
+                record = json.loads(rec_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(record, dict):
+                continue
+
+            run_id = self._safe_text(record.get("run_id") or rec_path.stem)
+            baseline_slug = self._slug(self._safe_text(record.get("baseline_slug")))
+            benchmark_slug = self._slug(self._safe_text(record.get("benchmark_slug")))
+            method_slug = self._slug(self._safe_text(record.get("method_slug")))
+
+            if run_id:
+                payload["history"][run_id] = record
+            if baseline_slug:
+                payload["baselines"][baseline_slug] = record
+            if benchmark_slug:
+                payload["benchmarks"][benchmark_slug] = record
+            if method_slug:
+                payload["methods"][method_slug] = record
+            latest_record = record
+
+        if latest_record:
+            payload["latest_run"] = latest_record
+        return self._save_latest_index(payload)
+
+    def register_research_run(
+        self,
+        *,
+        stage: PipelineStage,
+        execution_output: dict[str, Any],
+        experiment_blueprint: dict[str, Any],
+        run_kind: str,
+    ) -> dict[str, Any]:
+        self.ensure_global_research_layout()
+        run_id = self.allocate_global_run_id()
+        now = datetime.now(timezone.utc).isoformat()
+
+        proposed = experiment_blueprint.get("proposed_method", {})
+        method_name = self._safe_text(proposed.get("name") if isinstance(proposed, dict) else "")
+
+        baselines = experiment_blueprint.get("baselines", [])
+        baseline_slug = ""
+        if isinstance(baselines, list) and baselines:
+            first = baselines[0] if isinstance(baselines[0], dict) else {}
+            baseline_slug = self._safe_text(first.get("slug") or first.get("name"))
+
+        datasets = experiment_blueprint.get("datasets", [])
+        benchmark_slug = ""
+        if isinstance(datasets, list) and datasets:
+            first_ds = datasets[0] if isinstance(datasets[0], dict) else {}
+            benchmark_slug = self._safe_text(first_ds.get("name"))
+
+        record = {
+            "run_id": run_id,
+            "run_kind": run_kind,
+            "created_at": now,
+            "session_id": self.manifest.session_id,
+            "workspace": str(self.path),
+            "stage": stage.value,
+            "baseline_slug": self._slug(baseline_slug),
+            "benchmark_slug": self._slug(benchmark_slug),
+            "method_slug": self._slug(method_name or "proposed_method"),
+            "baseline_name": baseline_slug,
+            "benchmark_name": benchmark_slug,
+            "method_name": method_name,
+            "experiment_status": self._safe_text(execution_output.get("experiment_status")),
+            "final_status": self._safe_text(execution_output.get("final_status")),
+            "metrics": execution_output.get("experiment_results")
+            or execution_output.get("metrics")
+            or {},
+            "execution_output_path": self._safe_text(execution_output.get("_output_path")),
+            "required_papers": [
+                {
+                    "paper_id": self._safe_text(b.get("reference_paper_id")),
+                    "baseline": self._safe_text(b.get("name")),
+                }
+                for b in (baselines if isinstance(baselines, list) else [])
+                if isinstance(b, dict)
+            ],
+        }
+
+        history_record_path = self.global_results_dir / "history" / f"{run_id}.json"
+        history_record_path.write_text(
+            json.dumps(record, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+
+        baseline_dir = self.global_results_dir / "by_baseline" / record["baseline_slug"]
+        baseline_dir.mkdir(parents=True, exist_ok=True)
+        (baseline_dir / f"{run_id}.json").write_text(
+            json.dumps(record, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+
+        benchmark_dir = self.global_results_dir / "by_benchmark" / record["benchmark_slug"]
+        benchmark_dir.mkdir(parents=True, exist_ok=True)
+        (benchmark_dir / f"{run_id}.json").write_text(
+            json.dumps(record, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+
+        self.update_latest_index(record)
+        self.update_manifest(
+            latest_global_run_id=run_id,
+            latest_global_run_record=str(history_record_path),
+            latest_global_index_path="results/latest_index.json",
+        )
+        return record
+
+    def build_paper_summary_markdown(self, paper: dict[str, Any], role: str = "literature") -> str:
+        title = self._safe_text(paper.get("title")) or "Untitled Paper"
+        paper_id = self._safe_text(paper.get("paper_id") or paper.get("arxiv_id"))
+        url = self._safe_text(paper.get("url"))
+        year = self._safe_text(paper.get("year"))
+        venue = self._safe_text(paper.get("venue"))
+        abstract = self._safe_text(paper.get("abstract"))
+        bibtex = self._safe_text(paper.get("bibtex"))
+        method_text = self._safe_text(paper.get("method_text"))
+        experiment_text = self._safe_text(paper.get("experiment_text"))
+
+        return (
+            f"# {title}\n\n"
+            f"- paper_id: {paper_id}\n"
+            f"- role: {role}\n"
+            f"- year: {year}\n"
+            f"- venue: {venue}\n"
+            f"- url: {url}\n\n"
+            "## Method / Baseline Mapping\n"
+            "- baseline_method_name: TBD\n"
+            "- baseline_slug: TBD\n"
+            "- open_source: unknown\n"
+            "- open_source_url: TBD\n"
+            "- requires_training: unknown\n"
+            "- training_params: TBD\n"
+            "- model_scale: TBD\n\n"
+            "## Benchmark & Results\n"
+            "| benchmark | metric | result | note |\n"
+            "|---|---|---:|---|\n"
+            "| TBD | TBD | TBD | TBD |\n\n"
+            "## Abstract\n"
+            f"{abstract or 'TBD'}\n\n"
+            "## Method Notes\n"
+            f"{method_text or 'TBD'}\n\n"
+            "## Experiment Notes\n"
+            f"{experiment_text or 'TBD'}\n\n"
+            "## Citation (BibTeX)\n"
+            "```bibtex\n"
+            f"{bibtex or 'TBD'}\n"
+            "```\n"
+        )
+
+    def seed_references_from_ideation(self, ideation_output: dict[str, Any]) -> list[str]:
+        self.ensure_global_research_layout()
+        papers = ideation_output.get("papers", []) if isinstance(ideation_output, dict) else []
+        written: list[str] = []
+        for paper in papers:
+            if not isinstance(paper, dict):
+                continue
+            paper_id = self._safe_text(paper.get("paper_id") or paper.get("arxiv_id"))
+            title = self._safe_text(paper.get("title"))
+            file_stem = self._slug(paper_id or title)
+            if not file_stem:
+                continue
+            md_path = self.global_references_dir / "papers" / f"{file_stem}.md"
+            if md_path.exists():
+                continue
+            md_path.write_text(
+                self.build_paper_summary_markdown(paper),
+                encoding="utf-8",
+            )
+            written.append(str(md_path))
+        return written
+
+    def validate_baseline_paper_summaries(
+        self,
+        experiment_blueprint: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.ensure_global_research_layout()
+        baselines = experiment_blueprint.get("baselines", []) if isinstance(experiment_blueprint, dict) else []
+        missing: list[dict[str, Any]] = []
+        required_tokens = [
+            "open_source:",
+            "open_source_url:",
+            "requires_training:",
+            "training_params:",
+            "model_scale:",
+            "## Benchmark & Results",
+            "## Citation (BibTeX)",
+        ]
+        for bl in baselines:
+            if not isinstance(bl, dict):
+                continue
+            paper_id = self._safe_text(bl.get("reference_paper_id"))
+            baseline_name = self._safe_text(bl.get("name"))
+            key = self._slug(paper_id or baseline_name)
+            md_path = self.global_references_dir / "papers" / f"{key}.md"
+            if not md_path.exists():
+                missing.append(
+                    {
+                        "baseline": baseline_name,
+                        "paper_id": paper_id,
+                        "reason": "missing_markdown",
+                        "path": str(md_path),
+                    }
+                )
+                continue
+            text = md_path.read_text(encoding="utf-8", errors="replace")
+            absent = [token for token in required_tokens if token not in text]
+            placeholder_hits = [tok for tok in ("TBD", "unknown") if tok in text]
+            if absent or placeholder_hits:
+                missing.append(
+                    {
+                        "baseline": baseline_name,
+                        "paper_id": paper_id,
+                        "reason": "incomplete_markdown",
+                        "path": str(md_path),
+                        "missing_tokens": absent,
+                        "placeholder_tokens": placeholder_hits,
+                    }
+                )
+
+        queue = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "items": missing,
+            "instruction": (
+                "Use ccr code with paper-reading skills to enrich each markdown file until no required "
+                "tokens are missing and placeholders are resolved."
+            ),
+        }
+        queue_path = self.write_json("plans/paper_enrichment_queue.json", queue)
+        return {
+            "ok": len(missing) == 0,
+            "missing_count": len(missing),
+            "missing": missing,
+            "queue_path": str(queue_path),
+        }
 
     # ---- utility ---------------------------------------------------------
 

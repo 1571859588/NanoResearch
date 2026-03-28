@@ -176,7 +176,7 @@ class ArtifactRecord(BaseModel):
 class WorkspaceManifest(BaseModel):
     """Master manifest for a research session workspace."""
 
-    schema_version: str = "1.1"
+    schema_version: str = "1.2"
     session_id: str
     topic: str
     pipeline_mode: PipelineMode = PipelineMode.STANDARD
@@ -191,3 +191,8 @@ class WorkspaceManifest(BaseModel):
     # These paths are checked BEFORE global local_resource_paths and BEFORE downloading
     # Useful when you copy missing dataset/model files into the project's work directory
     local_resource_paths: list[str] = Field(default_factory=list)
+
+    # Global registry linkage (repo-level references/results tracking)
+    latest_global_run_id: str = ""
+    latest_global_run_record: str = ""
+    latest_global_index_path: str = "results/latest_index.json"

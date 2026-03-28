@@ -191,16 +191,32 @@ Return ONLY valid JSON."""
                     f"LLM output does not match ExperimentBlueprint schema: {exc}"
                 ) from exc
 
+        blueprint_payload = blueprint.model_dump(mode="json")
+        paper_summary_check = self.workspace.validate_baseline_paper_summaries(blueprint_payload)
+        blueprint_payload["paper_summary_check"] = paper_summary_check
+
         # Save output
         output_path = self.workspace.write_json(
             "plans/experiment_blueprint.json",
-            blueprint.model_dump(mode="json"),
+            blueprint_payload,
         )
         self.workspace.register_artifact(
             "experiment_blueprint", output_path, self.stage
         )
-        logger.info("[%s] Blueprint generated: %s", self.stage.value, blueprint.title)
-        return blueprint.model_dump(mode="json")
+
+        missing_count = int(paper_summary_check.get("missing_count", 0))
+        if missing_count > 0:
+            logger.warning(
+                "[%s] Blueprint generated with %d incomplete baseline paper summaries. "
+                "Enrichment queue: %s",
+                self.stage.value,
+                missing_count,
+                paper_summary_check.get("queue_path", ""),
+            )
+        else:
+            logger.info("[%s] Blueprint generated: %s", self.stage.value, blueprint.title)
+
+        return blueprint_payload
 
     @staticmethod
     def _build_evidence_block(ideation_data: dict) -> str:

@@ -249,10 +249,16 @@ class IdeationAgent(_IdeationSearchMixin, _IdeationHypothesisMixin, BaseResearch
                     self.stage.value, len(reference_repos))
         output.reference_repos = reference_repos
 
+        # Seed global references markdown skeletons for downstream baseline/benchmark curation
+        ideation_payload = output.model_dump(mode="json")
+        seeded_refs = self.workspace.seed_references_from_ideation(ideation_payload)
+        if seeded_refs:
+            logger.info("[%s] Seeded %d global paper summaries", self.stage.value, len(seeded_refs))
+
         # Save output
         output_path = self.workspace.write_json(
             "papers/ideation_output.json",
-            output.model_dump(mode="json"),
+            ideation_payload,
         )
         self.workspace.register_artifact(
             "ideation_output", output_path, self.stage
