@@ -17,6 +17,7 @@ from nanoresearch.agents.planning import PlanningAgent
 from nanoresearch.agents.review import ReviewAgent
 from nanoresearch.agents.setup import SetupAgent
 from nanoresearch.agents.reference_manager import ReferenceManagerAgent
+from nanoresearch.agents.writing import WritingAgent
 from nanoresearch.pipeline.base_orchestrator import BaseOrchestrator
 from nanoresearch.pipeline.state import PipelineStateMachine
 from nanoresearch.schemas.manifest import PipelineMode, PipelineStage
