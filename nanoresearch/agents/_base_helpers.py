@@ -171,12 +171,25 @@ def _extract_balanced_json_segment(text: str, start: int) -> str | None:
 
 
 def _extract_json_candidates(text: str) -> list[str]:
-    """Return likely JSON substrings from raw LLM output."""
+    """Return likely JSON substrings from raw LLM output.
+
+    Improvements:
+    - Flexible regex for ```json ... ``` blocks (case insensitive, optional space)
+    - Strip common non-JSON tags like <think>, <tool_call>, <invoke>, <parameter>
+    - Fallback to balanced brace matching on the remains.
+    """
     stripped = text.strip()
     if not stripped:
-        # Log warning for empty responses
         logger.warning("LLM returned empty response - text is empty or whitespace only")
         return []
+
+    # Pre-processing: remove <think>...</think> and XML-style tool tags that
+    # might be outside OR inside the blocks we're about to extract.
+    clean_text = re.sub(r"<think>[\s\S]*?</think>", "", stripped, flags=re.IGNORECASE)
+    # Strip <tool_call>, <invoke>, <parameter> etc tags but keep their inner text
+    # (unless it's a structural tag like <tool_call> which we just want to ignore)
+    clean_text = re.sub(r"</?(?:thought|think|tool_?call|invoke|parameter|tool)[^>]*>", "", clean_text, flags=re.IGNORECASE)
+    clean_text = clean_text.strip()
 
     candidates: list[str] = []
 
@@ -185,26 +198,33 @@ def _extract_json_candidates(text: str) -> list[str]:
             return
         value = candidate.strip()
         if value and value not in candidates:
+            # Final safety: if it's just a single character that's not { or [, it's not JSON
+            if len(value) == 1 and value not in "{[":
+                return
             candidates.append(value)
 
-    _add(stripped)
-
-    for match in re.finditer(r"```(?:json|JSON|javascript|js)?\s*([\s\S]*?)```", stripped):
+    # 1. Try any content between ```json and ```
+    for match in re.finditer(r"```(?:json|JSON|javascript|js)?\s*([\s\S]*?)```", stripped, re.IGNORECASE):
         block = match.group(1).strip()
-        if block.startswith("{") or block.startswith("["):
-            _add(block)
+        _add(block)
 
+    # 2. Try any balanced { ... } or [ ... ] segments in the CLEANED text
     start_count = 0
-    for index, ch in enumerate(stripped):
+    for index, ch in enumerate(clean_text):
         if ch not in "{[":
             continue
         start_count += 1
-        if start_count > 20:
+        if start_count > 30: # more candidates
             break
-        _add(_extract_balanced_json_segment(stripped, index))
-        tail = stripped[index:].strip()
-        if tail.startswith("{") or tail.startswith("["):
-            _add(tail)
+        _add(_extract_balanced_json_segment(clean_text, index))
+
+    # 3. Fallback: the whole cleaned text if it starts with { or [
+    if clean_text.startswith("{") or clean_text.startswith("["):
+        _add(clean_text)
+        
+    # 4. Fallback: the original stripped text if it starts with { or [
+    if stripped.startswith("{") or stripped.startswith("["):
+        _add(stripped)
 
     return candidates
 

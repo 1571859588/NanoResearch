@@ -108,6 +108,10 @@ class BaseResearchAgent(ABC):
         Uses prompt-based JSON formatting instead of response_format parameter
         to avoid compatibility issues with some models.
         """
+        # Improvement: Explicitly ask for ```json ... ``` code block to help regex extraction
+        if "```json" not in user_prompt.lower() and "json outside a code block" not in user_prompt.lower():
+            user_prompt += "\n\nIMPORTANT: Return ONLY the final JSON object inside a ```json\n{...}\n``` code block. Do NOT include any other text or thoughts outside the block."
+
         raw = await self.generate(
             system_prompt, user_prompt, json_mode=False,  # Don't use response_format
             stage_override=stage_override,
@@ -234,6 +238,36 @@ class BaseResearchAgent(ABC):
             msg = await self._dispatcher.generate_with_tools(cfg, messages, openai_tools)
 
             tool_calls = getattr(msg, "tool_calls", None)
+            
+            # --- IMPROVEMENT: Handle manual XML-style tool calls in text content ---
+            # Some models (like MiniMax) might output <tool_call>... instead of using the API field.
+            if not tool_calls and msg.content:
+                # Search for <tool_call><invoke name="TOOL_NAME"><parameter name="ARG">VALUE</parameter></invoke></tool_call>
+                # or <tool_call><tool name="TOOL_NAME"><parameter name="ARG">VALUE</parameter></tool></tool_call>
+                manual_matches = re.finditer(r"<tool_call>[\s\S]*?</tool_call>", msg.content)
+                synthesized_calls = []
+                for m in manual_matches:
+                    xml_block = m.group(0)
+                    tool_name_match = re.search(r'<(?:invoke|tool)\s+name=["\']([^"\']+)["\']', xml_block)
+                    if tool_name_match:
+                        tool_name = tool_name_match.group(1)
+                        # Extract parameters
+                        args = {}
+                        for p_match in re.finditer(r'<parameter\s+name=["\']([^"\']+)["\']>([\s\S]*?)</parameter>', xml_block):
+                            args[p_match.group(1)] = p_match.group(2).strip()
+                        
+                        # Create a mock tool call object
+                        from types import SimpleNamespace
+                        synthesized_calls.append(SimpleNamespace(
+                            id=f"manual_{round_idx}_{len(synthesized_calls)}",
+                            function=SimpleNamespace(
+                                name=tool_name,
+                                arguments=json.dumps(args)
+                            )
+                        ))
+                if synthesized_calls:
+                    tool_calls = synthesized_calls
+
             if not tool_calls:
                 return self._dispatcher._strip_think_blocks(msg.content or "")
 

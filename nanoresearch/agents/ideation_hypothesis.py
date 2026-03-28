@@ -223,20 +223,23 @@ Return ONLY valid JSON."""
                 react_result = await self.generate_with_tools(
                     IDEATION_ANALYSIS_SYSTEM, prompt, tools, max_tool_rounds=2
                 )
-                text = react_result.strip()
-                if text.startswith("```"):
-                    lines = text.split("\n")
-                    lines = lines[1:]
-                    if lines and lines[-1].strip().startswith("```"):
-                        lines = lines[:-1]
-                    text = "\n".join(lines)
-                try:
-                    result = json.loads(text)
-                except json.JSONDecodeError as e:
+                
+                # Use robust extraction helper to handle markdown blocks and noisy text
+                from nanoresearch.agents._base_helpers import _extract_json_candidates
+                candidates = _extract_json_candidates(react_result)
+                result = None
+                for candidate in candidates:
+                    try:
+                        result = json.loads(candidate)
+                        break
+                    except json.JSONDecodeError:
+                        continue
+                
+                if result is None:
                     logger.warning(
-                        "[%s] ReAct output was not valid JSON (%s), "
-                        "falling back to standard generation. Output preview: %r",
-                        self.stage.value, e, text[:200],
+                        "[%s] ReAct output did not contain valid JSON, "
+                        "falling back to standard generation.",
+                        self.stage.value,
                     )
                     result = await self.generate_json(IDEATION_ANALYSIS_SYSTEM, prompt)
             else:
