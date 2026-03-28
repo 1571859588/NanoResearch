@@ -16,7 +16,7 @@ from nanoresearch.agents.ideation import IdeationAgent
 from nanoresearch.agents.planning import PlanningAgent
 from nanoresearch.agents.review import ReviewAgent
 from nanoresearch.agents.setup import SetupAgent
-from nanoresearch.agents.writing import WritingAgent
+from nanoresearch.agents.reference_manager import ReferenceManagerAgent
 from nanoresearch.pipeline.base_orchestrator import BaseOrchestrator
 from nanoresearch.pipeline.state import PipelineStateMachine
 from nanoresearch.schemas.manifest import PipelineMode, PipelineStage
@@ -30,6 +30,7 @@ class DeepPipelineOrchestrator(BaseOrchestrator):
     _STAGE_KEY_MAP: dict[PipelineStage, str] = {
         PipelineStage.IDEATION: "ideation_output",
         PipelineStage.PLANNING: "experiment_blueprint",
+        PipelineStage.SCIENTIFIC_REVIEW: "scientific_review_output",
         PipelineStage.SETUP: "setup_output",
         PipelineStage.CODING: "coding_output",
         PipelineStage.BASELINE_EXECUTION: "baseline_execution_output",
@@ -43,6 +44,7 @@ class DeepPipelineOrchestrator(BaseOrchestrator):
     _OUTPUT_FILE_MAP: dict[PipelineStage, str] = {
         PipelineStage.IDEATION: "papers/ideation_output.json",
         PipelineStage.PLANNING: "plans/experiment_blueprint.json",
+        PipelineStage.SCIENTIFIC_REVIEW: "plans/scientific_review_output.json",
         PipelineStage.SETUP: "plans/setup_output.json",
         PipelineStage.CODING: "plans/coding_output.json",
         PipelineStage.BASELINE_EXECUTION: "plans/baseline_execution_output.json",
@@ -59,6 +61,7 @@ class DeepPipelineOrchestrator(BaseOrchestrator):
         return {
             PipelineStage.IDEATION: IdeationAgent(self.workspace, self.config),
             PipelineStage.PLANNING: PlanningAgent(self.workspace, self.config),
+            PipelineStage.SCIENTIFIC_REVIEW: ReferenceManagerAgent(self.workspace, self.config),
             PipelineStage.SETUP: SetupAgent(self.workspace, self.config),
             PipelineStage.CODING: CodingAgent(self.workspace, self.config),
             PipelineStage.BASELINE_EXECUTION: BaselineExecutionAgent(self.workspace, self.config),
@@ -128,6 +131,9 @@ class DeepPipelineOrchestrator(BaseOrchestrator):
 
         elif stage == PipelineStage.PLANNING:
             inputs["ideation_output"] = accumulated.get("ideation_output", {})
+
+        elif stage == PipelineStage.SCIENTIFIC_REVIEW:
+            inputs["experiment_blueprint"] = accumulated.get("experiment_blueprint", {})
 
         elif stage == PipelineStage.SETUP:
             inputs["topic"] = topic

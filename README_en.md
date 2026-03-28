@@ -156,7 +156,7 @@ Typical saved artifacts include:
 ```text
 Topic
   ↓
-IDEATION → PLANNING → SETUP → CODING → EXECUTION → ANALYSIS → FIGURE_GEN → WRITING → REVIEW
+IDEATION → PLANNING → SCIENTIFIC_REVIEW → SETUP → CODING → BASELINE_EXECUTION → EXECUTION → ANALYSIS → FIGURE_GEN → WRITING → REVIEW
   ↓
 Exported workspace with paper.pdf / paper.tex / references.bib / figures / code / data
 ```
@@ -170,23 +170,27 @@ The `deep` command is kept as a compatibility alias, and the legacy standard orc
 | --- | --- |
 | `IDEATION` | Search literature, identify gaps, propose hypotheses, collect must-cite candidates |
 | `PLANNING` | Turn the idea into a concrete experiment blueprint |
+| `SCIENTIFIC_REVIEW` | **Quality Gate 1**: Automatically check design for scientific validity and fix structural issues |
 | `SETUP` | Prepare repositories, dependencies, models, and datasets |
-| `CODING` | Generate a runnable experiment project |
-| `EXECUTION` | Run experiments locally or on SLURM, with retry/debug support |
-| `ANALYSIS` | Parse logs and metrics into structured evidence |
-| `FIGURE_GEN` | Create architecture visuals and result charts |
+| `CODING` | Generate a runnable experiment project with baseline isolation |
+| `BASELINE_EXECUTION` | **Run baselines**, with support for reusing results from paper SUMMARY.md |
+| `EXECUTION` | **Run our method**, with versioned results (run_00001+) |
+| `ANALYSIS` | Parse logs into structured evidence and update global latest_index.json |
+| `FIGURE_GEN` | Create architecture visuals and result charts from real data |
 | `WRITING` | Write and compile the LaTeX paper draft |
-| `REVIEW` | Review sections, detect issues, and revise |
+| `REVIEW` | Review sections, detect issues, and revise automatically |
 
 ## Key capabilities
 
 | Capability | What it means in practice |
 | --- | --- |
-| **Grounded writing** | Paper sections are written from structured evidence, citations, and experiment artifacts instead of pure free-form generation |
-| **Resumable workspaces** | Each stage writes artifacts to disk so failed runs can be resumed instead of restarted |
-| **Execution-aware pipeline** | Generated code can be executed locally or on SLURM-backed environments |
-| **Multi-model routing** | Different stages can use different models for ideation, coding, writing, figures, and review |
-| **Exportable outputs** | Final outputs can be exported as a clean bundle with paper, figures, code, data, and manifest |
+| **Grounded writing** | Paper sections are written from structured evidence, citations, and experiment artifacts |
+| **Resumable workspaces** | Each stage writes artifacts to disk so failed runs can be resumed |
+| **Execution-aware pipeline** | Generated code executed locally or on SLURM-backed clusters |
+| **Versioned Results** | All runs are stored as `run_00001`, `run_00002` etc. in the global registry |
+| **Paper Summary System** | Baseline PDFs are summarized into `SUMMARY.md` for easy result reuse |
+| **Multi-model routing** | Different stages can use different models (e.g. Claude for writing, DeepSeek for code) |
+| **Exportable outputs** | Final outputs can be exported as a clean bundle with paper, figures, code, and manifest |
 
 ### Literature + citation grounding
 - Searches external research sources and builds structured ideation artifacts
@@ -216,14 +220,16 @@ That workspace stores the manifest, stage artifacts, logs, generated code, paper
 
 ```text
 1. IDEATION   → collect papers, gaps, hypotheses, must-cite candidates
-2. PLANNING   → build the experiment blueprint
-3. SETUP      → prepare repos, environments, and resources
-4. CODING     → generate runnable experiment code
-5. EXECUTION  → run locally or on SLURM
-6. ANALYSIS   → convert outputs into structured evidence
-7. FIGURE_GEN → generate architecture and results figures
-8. WRITING    → build paper.tex, references.bib, and paper.pdf
-9. REVIEW     → critique and revise the draft
+2. PLANNING   → build the experiment blueprint + reference stubs
+3. SCIENTIFIC_REVIEW → validate experiment design (Quality Gate 1)
+4. SETUP      → prepare repos, environments, and resources
+5. CODING     → generate runnable experiment code with baseline isolation
+6. BASELINE_EXECUTION → run baselines (or reuse from papers)
+7. EXECUTION  → run our method (versioned results)
+8. ANALYSIS   → convert outputs into structured evidence + update global index
+9. FIGURE_GEN → generate architecture and results figures
+10. WRITING    → build paper.tex, references.bib, and paper.pdf
+11. REVIEW     → critique and revise the draft
 ```
 
 The result is not just a document. It is a full research workspace with saved intermediate state, artifacts, and logs that can be resumed and inspected later.
@@ -434,12 +440,12 @@ The unified pipeline supports three high-level execution profiles:
 | `nanoresearch run --topic "..."` | Start a new unified pipeline run |
 | `nanoresearch resume --workspace ...` | Resume from the last checkpoint |
 | `nanoresearch status --workspace ...` | Show per-stage status and artifacts |
+| `nanoresearch migrate-results` | **[NEW]** Migrate legacy workspace results to global registry |
 | `nanoresearch list` | List saved research sessions |
 | `nanoresearch export --workspace ...` | Export a clean output bundle |
 | `nanoresearch config` | Print the effective config with masked secrets |
 | `nanoresearch inspect --workspace ...` | Inspect saved artifacts for a workspace |
 | `nanoresearch health` | Run environment/config health checks |
-| `nanoresearch delete <session_id>` | Remove a saved session workspace |
 
 For the full command surface, use:
 
@@ -528,13 +534,15 @@ A live workspace contains the full intermediate state as well:
 ```text
 ~/.nanoresearch/workspace/research/{session_id}/
 ├── manifest.json
-├── papers/
-├── plans/
-├── code/
-├── figures/
-├── drafts/
-├── logs/
-└── ...
+├── papers/               # original literature
+├── plans/                # blueprint and execution queues
+├── code/                 # our method code
+├── baselines/            # [NEW] baseline projects (slug-isolated)
+├── references/           # [NEW] baseline paper PDFs + SUMMARY.md
+├── results/              # [NEW] experiment results (run_00001+)
+├── figures/              # visuals
+├── drafts/               # LaTeX sources
+└── logs/                 # execution logs
 ```
 
 ## Model routing

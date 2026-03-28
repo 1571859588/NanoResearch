@@ -24,6 +24,7 @@ from nanoresearch.pipeline.blueprint_validator import validate_blueprint
 from nanoresearch.pipeline.cost_tracker import CostTracker
 from nanoresearch.pipeline.progress import ProgressEmitter
 from nanoresearch.pipeline.state import PipelineStateMachine
+from nanoresearch.pipeline.status_tracker import StatusTracker
 from nanoresearch.pipeline.workspace import Workspace
 from nanoresearch.schemas.manifest import PipelineMode, PipelineStage
 
@@ -59,6 +60,7 @@ class BaseOrchestrator(ABC):
         self.progress_callback = progress_callback
         self.cost_tracker = CostTracker()
         self.progress_emitter = ProgressEmitter(workspace.path / "progress.json")
+        self.status_tracker = StatusTracker(workspace.path)
 
         self.state_machine = PipelineStateMachine(
             workspace.manifest.current_stage,
@@ -534,6 +536,10 @@ class BaseOrchestrator(ABC):
                 self.workspace.mark_stage_completed(
                     stage, self._OUTPUT_FILE_MAP.get(stage, ""),
                 )
+                try:
+                    self.status_tracker.generate_status_report()
+                except Exception as exc:
+                    logger.debug("STATUS.md update failed (non-fatal): %s", exc)
                 logger.info("Stage %s completed", stage.value)
                 return self._wrap_stage_output(stage, result)
 

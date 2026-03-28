@@ -152,7 +152,7 @@ NanoResearch 是一个端到端的自主科研系统。与传统的"AI 写论文
 ```text
 Research Topic
   ↓
-IDEATION → PLANNING → SETUP → CODING → EXECUTION → ANALYSIS → FIGURE_GEN → WRITING → REVIEW
+IDEATION → PLANNING → SCIENTIFIC_REVIEW → SETUP → CODING → BASELINE_EXECUTION → EXECUTION → ANALYSIS → FIGURE_GEN → WRITING → REVIEW
   ↓
 Exported workspace: paper.pdf / paper.tex / references.bib / figures / code / data
 ```
@@ -162,23 +162,26 @@ Exported workspace: paper.pdf / paper.tex / references.bib / figures / code / da
 | Stage | 功能 | 说明 |
 |-------|------|------|
 | `IDEATION` | 文献检索与创意生成 | 搜索学术文献、发现研究空白、提出假说、收集必引文献 |
-| `PLANNING` | 实验方案设计 | 将研究想法转化为详细的实验蓝图 |
+| `PLANNING` | 实验方案设计 | 将研究想法转化为详细的实验蓝图，自动生成引用文献存根 |
+| `SCIENTIFIC_REVIEW` | 科学性审判 (Quality Gate 1) | 自动检查实验设计的科学性，修复数据集路径、基线命令等结构化问题 |
 | `SETUP` | 环境准备 | 准备代码仓库、依赖环境、模型和数据集 |
-| `CODING` | 代码生成 | 生成完整可运行的实验项目（含训练脚本、数据处理、模型定义） |
-| `EXECUTION` | **实验执行** | **在本地 GPU 或 SLURM 集群上运行训练，支持自动重试和调试** |
-| `ANALYSIS` | 结果分析 | 解析训练日志和指标，生成结构化实验证据 |
+| `CODING` | 代码生成 | 生成完整可运行的实验项目，支持 `baselines/` 目录隔离 |
+| `BASELINE_EXECUTION` | **基线执行** | **独立运行基线实验，优先尝试从已有的 SUMMARY.md 自动提取论文结果** |
+| `EXECUTION` | **实验执行** | **运行我们的方法，支持版本化结果存储 (run_00001+)** |
+| `ANALYSIS` | 结果分析 | 解析训练日志和指标，自动更新全局结果注册表 (latest_index.json) |
 | `FIGURE_GEN` | 图表生成 | 创建架构图、结果对比图、消融实验图 |
 | `WRITING` | 论文撰写 | 基于实验证据和引用撰写 LaTeX 论文 |
-| `REVIEW` | 审稿与修订 | 自动审阅各章节，检测问题并修订 |
+| `REVIEW` | 审稿与修订 | 自动审稿并根据反馈自我修正 |
 
 ### Execution Details
 
 `EXECUTION` 阶段是 NanoResearch 的核心差异化能力：
 
+- **版本化结果存储**：所有实验运行按 `run_00001`, `run_00002` 自动递增存储，永不覆盖旧实验
+- **基线论文系统**：自动下载基线论文 PDF 并生成 `SUMMARY.md`，支持直接复用论文实验数据
+- **全局结果注册表**：在 `results/latest_index.json` 中维护所有基线、模型和 Benchmark 的最新状态
 - **自动提交 SLURM 作业**：生成 sbatch 脚本，提交到集群，监控作业状态
-- **本地 GPU 执行**：自动检测可用 GPU，管理训练进程
 - **自动调试与重试**：训练失败时自动分析错误日志，修复代码并重新执行
-- **实时日志监控**：追踪训练进度和指标变化
 - **混合执行模式**：可根据任务复杂度在本地和集群之间自动切换
 
 ## Key Capabilities
@@ -384,12 +387,11 @@ claude
 | `nanoresearch run --topic "..."` | 启动新的流水线运行 |
 | `nanoresearch resume --workspace ...` | 从上次断点恢复 |
 | `nanoresearch status --workspace ...` | 查看各阶段状态和产物 |
+| `nanoresearch migrate-results` | **[NEW]** 将旧版工作空间的结果迁移到全局注册表 |
 | `nanoresearch list` | 列出已保存的研究会话 |
 | `nanoresearch export --workspace ...` | 导出论文打包 |
 | `nanoresearch config` | 打印当前配置（密钥已屏蔽） |
-| `nanoresearch inspect --workspace ...` | 检查工作空间产物 |
-| `nanoresearch health` | 运行环境/配置健康检查 |
-| `nanoresearch delete <session_id>` | 删除指定会话 |
+| `nanoresearch health` | 运行环境健康检查 |
 
 ```bash
 nanoresearch --help
@@ -415,13 +417,15 @@ my_paper/
 ```text
 ~/.nanoresearch/workspace/research/{session_id}/
 ├── manifest.json
-├── papers/
-├── plans/
-├── code/
-├── figures/
-├── drafts/
-├── logs/
-└── ...
+├── papers/               # 调研涉及的原始文献
+├── plans/                # 实验蓝图与执行队列
+├── code/                 # 我们的方法代码
+├── baselines/            # [NEW] 基线方法代码（slug 隔离）
+├── references/           # [NEW] 基线论文 PDF + 结构化 SUMMARY.md
+├── results/              # [NEW] 实验结果 (run_00001+)
+├── figures/              # 生成的论文配图
+├── drafts/               # LaTeX 论文草稿
+└── logs/                 # 详细的运行日志
 ```
 
 ## Model Routing

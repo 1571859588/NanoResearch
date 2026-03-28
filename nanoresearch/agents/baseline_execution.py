@@ -49,6 +49,23 @@ class BaselineExecutionAgent(ExecutionAgent):
 
         self.log(f"Baseline execution command resolved to: {baseline_cmd}")
 
+        # --- Step 0.5: Check for reusable published results ---
+        blueprint = inputs.get("experiment_blueprint", {})
+        reusable_metrics = self._check_published_results(blueprint)
+        if reusable_metrics and len(reusable_metrics) == len(blueprint.get("baselines", [])):
+            self.log(f"Optimization: Reusing published results for all {len(reusable_metrics)} baselines from paper summaries.")
+            # Create a mock result structure matching ExecutionAgent.run
+            metrics_file = code_dir / "results" / "baseline_metrics.json"
+            metrics_file.parent.mkdir(parents=True, exist_ok=True)
+            metrics_file.write_text(json.dumps(reusable_metrics, indent=2), encoding="utf-8")
+            
+            return {
+                "status": "completed",
+                "reason": "optimized_via_paper_summaries",
+                "metrics": reusable_metrics,
+                "global_run_id": "REUSED_FROM_PAPERS"
+            }
+
         # --- Step 1: Clear stale iteration checkpoints ---
         checkpoint_path = self.workspace.path / _LOCAL_CHECKPOINT
         if checkpoint_path.exists():
@@ -177,3 +194,68 @@ class BaselineExecutionAgent(ExecutionAgent):
                     logger.warning("Failed to read metrics from %s: %s", metrics_file, exc)
 
         return all_metrics
+
+    def _check_published_results(self, blueprint: dict) -> list[dict]:
+        """Check if baselines have results in their paper SUMMARY.md for the target dataset."""
+        import re
+        baselines = blueprint.get("baselines", [])
+        if not baselines:
+            return []
+            
+        # Try to identify the primary dataset/benchmark from the blueprint
+        dataset = blueprint.get("dataset", "") or blueprint.get("benchmark", "unknown")
+        if isinstance(dataset, dict):
+            dataset = dataset.get("name", "unknown")
+            
+        reusable_metrics = []
+        
+        for bl in baselines:
+            paper_id = bl.get("reference_paper_id")
+            slug = bl.get("slug")
+            if not paper_id or not slug:
+                continue
+                
+            # Look for the markdown summary
+            clean_pid = re.sub(r"[^a-zA-Z0-9]+", "_", paper_id.lower()).strip("_")
+            md_path = self.workspace.global_references_dir / "papers" / f"{clean_pid}.md"
+            
+            if not md_path.exists():
+                logger.debug("No summary found for paper %s at %s", paper_id, md_path)
+                continue
+                
+            md_content = md_path.read_text(encoding="utf-8", errors="replace")
+            
+            # Look for a results table entry matching the dataset
+            # Matches: | Dataset | Metric | Value |
+            # We search for lines containing the dataset name
+            lines = md_content.splitlines()
+            found_for_this_baseline = False
+            for line in lines:
+                if "|" in line and dataset.lower() in line.lower():
+                    parts = [p.strip() for p in line.split("|") if p.strip()]
+                    if len(parts) >= 3:
+                        # Heuristic: [Dataset, Metric, Value, ...]
+                        metric_name = parts[1]
+                        metric_val_str = parts[2]
+                        
+                        # Clean the value (handle percentages, bolding like **85.2**, etc.)
+                        val_clean = re.sub(r"[^\d.]", "", metric_val_str)
+                        if val_clean:
+                            try:
+                                val_float = float(val_clean)
+                                reusable_metrics.append({
+                                    "baseline_slug": slug,
+                                    "metric": metric_name,
+                                    "value": val_float,
+                                    "source": f"paper:{paper_id}",
+                                    "dataset": dataset
+                                })
+                                found_for_this_baseline = True
+                                break # Take first valid metric for this dataset
+                            except ValueError:
+                                continue
+            
+            if not found_for_this_baseline:
+                logger.debug("No valid metrics found in summary for baseline %s on dataset %s", slug, dataset)
+                            
+        return reusable_metrics
